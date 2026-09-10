@@ -179,7 +179,7 @@ func seedLeagues() {
 
 func recalculateAllScores() {
 	rows, err := db.Query(`
-		SELECT id, time_taken, clicks, checkpoints 
+		SELECT id, time_taken, clicks, status, checkpoints 
 		FROM level_leaderboards`)
 	if err != nil {
 		return
@@ -196,9 +196,18 @@ func recalculateAllScores() {
 		var id int64
 		var timeTaken float64
 		var clicks int
+		var status int
 		var chk int
-		if err := rows.Scan(&id, &timeTaken, &clicks, &chk); err == nil {
-			score := calculateBase(timeTaken, clicks, chk)
+		if err := rows.Scan(&id, &timeTaken, &clicks, &status, &chk); err == nil {
+			progress := 100.0
+			if status == 0 {
+				if chk > 0 && chk <= 100 {
+					progress = float64(chk)
+				} else {
+					progress = 0.0
+				}
+			}
+			score := calculateBase(timeTaken, clicks, progress)
 			items = append(items, item{id: id, score: score})
 		}
 	}
@@ -208,12 +217,22 @@ func recalculateAllScores() {
 	}
 }
 
-func calculateBase(timeTaken float64, clicks int, checkpoints int) float64 {
+// calculateBase computes the base score using time, clicks, and checkpoint completion percentage (0.0% to 100.0%):
+//   Completion Bonus = (Progress% / 100.0) * 2,500.0
+//   Base Score = max(100.0, 10,000.0 - 10*Time - 100*Clicks) + Completion Bonus
+func calculateBase(timeTaken float64, clicks int, progress float64) float64 {
 	base := 10000.0 - (10.0 * timeTaken) - (100.0 * float64(clicks))
 	if base < 100.0 {
 		base = 100.0
 	}
-	base += float64(checkpoints) * 250.0
+	if progress > 100.0 {
+		progress = 100.0
+	}
+	if progress < 0.0 {
+		progress = 0.0
+	}
+	bonus := (progress / 100.0) * 2500.0
+	base += bonus
 	return math.Round(base)
 }
 
@@ -263,18 +282,19 @@ func ParseDifficultyMultiplier(diffVal interface{}) (float64, string) {
 	return 0.25, "0.25"
 }
 
-// CalculateScore computes the run's base score considering time, clicks, and checkpoints.
+// CalculateScore computes the run's base score considering time, clicks, and checkpoint completion percentage (0-100%).
 // For individual levels, all players compete on the pure unscaled base score:
-//   Level Score = round( max(100, 10,000 - 10*Time - 100*Clicks) + (Checkpoints * 250) )
+//   Completion Bonus = (Progress / 100.0) * 2500
+//   Level Score = round( max(100, 10,000 - 10*Time - 100*Clicks) + Completion Bonus )
 //
 // The difficulty multiplier (clamped to 0.0 - 1.0) is stored alongside the run and is applied
 // when combining multiple levels into a League Leaderboard:
 //   League Level Contribution = round( Level Score * DifficultyMultiplier )
 //
 // Whatever the status may be (1 for win, 0 for lose), the exact same formula applies.
-func CalculateScore(timeTaken float64, clicks int, diffVal interface{}, status int, checkpoints int) (float64, string) {
+func CalculateScore(timeTaken float64, clicks int, diffVal interface{}, status int, progress float64) (float64, string) {
 	_, diffName := ParseDifficultyMultiplier(diffVal)
-	score := calculateBase(timeTaken, clicks, checkpoints)
+	score := calculateBase(timeTaken, clicks, progress)
 	return score, diffName
 }
 

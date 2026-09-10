@@ -67,13 +67,14 @@ Pre-set difficulty names map to:
 
 Whatever the status may be (`1` for win or `0` for lose), the exact same base formula is applied:
 
-$$\text{Base Score} = \max\left(100.0, 10,000.0 - (10.0 \times T) - (100.0 \times C)\right) + (\text{checkpoints} \times 250.0)$$
+$$\text{Completion Bonus} = \left(\frac{\text{Progress } \%}{100.0}\right) \times 2,500.0$$
+$$\text{Base Score} = \max\left(100.0, 10,000.0 - (10.0 \times T) - (100.0 \times C)\right) + \text{Completion Bonus}$$
 
 - **Single Level Leaderboards (`GET /api/leaderboard?level=...`)**:
   - Scores represent the pure **Base Score**: $\text{Level Score} = \text{round}(\text{Base Score})$.
-  - Everyone playing the same level is judged on pure speed, route efficiency, and checkpoints, keeping scores high, un-deflated, and intuitive.
+  - Everyone playing the same level is judged on pure speed, route efficiency, and checkpoint completion percentage, keeping scores high, un-deflated, and normalized across levels with varying checkpoint counts.
 - **Time ($T$) & Clicks ($C$)**: Lower time and fewer clicks maximize the base score.
-- **Checkpoints**: Each checkpoint cleared awards $+250$ bonus points.
+- **Checkpoint Progress**: Full completion ($100\%$) awards the maximum $+2,500$ bonus points. Partial runs (losses/timeouts) receive proportional points (e.g. $50\% \rightarrow +1,250$ pts).
 - **Status Independent**: The same formula applies for both wins (`1`) and losses/timeouts (`0`).
 
 ---
@@ -149,7 +150,8 @@ Submits player stats upon finishing a level.
 | `clicks` | `int` | **REQUIRED** | $\ge 0$ | Total links clicked (e.g. `5`) |
 | `difficulty` | `float`/`string` | **REQUIRED** | `0.0` – `1.0` or `"easy"`, `"medium"`, `"hard"`, `"insane"` | Multiplier between 0.0 and 1.0 |
 | `status` | `int` | **REQUIRED** | **`1` = Win, `0` = Lose** | Result of the run |
-| `checkpoints` | `int` | **REQUIRED** | $\ge 0$ (pass `0` if none) | Checkpoints cleared |
+| `checkpoints` | `int` | **REQUIRED** | $\ge 0$ (pass `0` if none) | Checkpoints cleared count |
+| `progress` | `float` | *Optional* | `0.0` – `100.0` | Checkpoint completion percentage (auto-defaults to 100 for wins) |
 | `league` | `string` | *Optional* | String | Target league (default: `"Global Championship"`) |
 
 #### Example Request (Win):

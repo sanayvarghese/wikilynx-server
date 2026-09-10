@@ -23,6 +23,7 @@ type ScoreRequest struct {
 	Clicks      interface{} `json:"clicks"`
 	Status      interface{} `json:"status"` // 0 = Lose, 1 = Win (accepts int, bool, or string)
 	Checkpoints interface{} `json:"checkpoints"`
+	Progress    interface{} `json:"progress,omitempty"`
 }
 
 type APIResponse struct {
@@ -167,24 +168,42 @@ func handleScoreSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	status := parseStatus(req.Status)
 
-	if req.Checkpoints == nil {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "checkpoints is required (pass 0 if none)"})
-		return
+	var checkpoints int = 0
+	if req.Checkpoints != nil {
+		if chkF, err := parseNumber(req.Checkpoints); err == nil && chkF >= 0 {
+			checkpoints = int(chkF)
+		}
 	}
-	chkF, err := parseNumber(req.Checkpoints)
-	if err != nil || chkF < 0 {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "checkpoints must be a valid non-negative integer (pass 0 if none)"})
-		return
+
+	var progress float64 = 0.0
+	if req.Progress != nil {
+		if p, err := parseNumber(req.Progress); err == nil {
+			progress = p
+		}
+	} else if req.Checkpoints != nil {
+		if p, err := parseNumber(req.Checkpoints); err == nil {
+			progress = p
+		}
 	}
-	checkpoints := int(chkF)
+
+	// If player won (status == 1), progress is 100%
+	if status == 1 && progress < 100.0 {
+		progress = 100.0
+	}
+	if progress > 100.0 {
+		progress = 100.0
+	}
+	if progress < 0.0 {
+		progress = 0.0
+	}
 
 	league := strings.TrimSpace(req.League)
 	if league == "" {
 		league = "Global Championship"
 	}
 
-	// Compute score based on time, clicks, difficulty (0.0 to 1.0), status (1/0), and checkpoints
-	score, diffName := CalculateScore(timeTaken, clicks, req.Difficulty, status, checkpoints)
+	// Compute score based on time, clicks, difficulty (0.0 to 1.0), status (1/0), and checkpoint progress %
+	score, diffName := CalculateScore(timeTaken, clicks, req.Difficulty, status, progress)
 
 	entry := ScoreEntry{
 		Level:       level,
