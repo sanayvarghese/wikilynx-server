@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WikiLYNX Admin | League Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .admin-container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+    .auth-card {
+      max-width: 440px;
+      margin: 80px auto;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 36px 30px;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+    .auth-header {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .auth-icon {
+      font-size: 2.5rem;
+      margin-bottom: 10px;
+    }
+    .form-group {
+      margin-bottom: 18px;
+    }
+    .form-label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+    .form-input {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      color: var(--text-main);
+      padding: 12px 16px;
+      font-size: 0.95rem;
+      font-family: var(--font-main);
+      outline: none;
+      transition: all 0.2s ease;
+    }
+    .form-input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--border-glow);
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .btn-submit {
+      width: 100%;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: #000;
+      font-weight: 700;
+      border: none;
+      padding: 14px;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      font-size: 1rem;
+      transition: all 0.2s ease;
+      box-shadow: 0 0 20px rgba(0, 230, 118, 0.3);
+    }
+    .btn-submit:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 0 25px rgba(0, 230, 118, 0.5);
+    }
+    .admin-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 8px 16px;
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      font-size: 0.9rem;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.12);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #f87171;
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.3);
+      border-color: #ef4444;
+      color: #fff;
+    }
+    .create-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      margin-bottom: 28px;
+      backdrop-filter: blur(16px);
+    }
+    .create-card h3 {
+      font-size: 1.2rem;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .alert-box {
+      padding: 12px 16px;
+      border-radius: var(--radius-md);
+      margin-bottom: 16px;
+      font-size: 0.9rem;
+      display: none;
+    }
+    .alert-error {
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #f87171;
+    }
+    .alert-success {
+      background: rgba(0, 230, 118, 0.15);
+      border: 1px solid rgba(0, 230, 118, 0.3);
+      color: var(--primary);
+    }
+  </style>
+</head>
+<body>
+  <div class="background-glow glow-1"></div>
+  <div class="background-glow glow-2"></div>
+
+  <div class="app-container admin-container">
+    <!-- Login Screen -->
+    <div id="loginScreen" class="auth-card">
+      <div class="auth-header">
+        <div class="auth-icon">🛡️</div>
+        <h2>Admin Authentication</h2>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 4px;">Protected League Management</p>
+      </div>
+
+      <div id="loginAlert" class="alert-box alert-error"></div>
+
+      <form id="loginForm">
+        <div class="form-group">
+          <label class="form-label" for="adminId">Admin ID / Username</label>
+          <input type="text" id="adminId" class="form-input" placeholder="e.g. root" required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="adminPass">Password</label>
+          <input type="password" id="adminPass" class="form-input" placeholder="Enter admin password" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn-submit">Sign In to Admin Panel</button>
+      </form>
+
+      <div style="text-align: center; margin-top: 20px;">
+        <a href="/" class="btn-secondary" style="font-size: 0.82rem;">← Return to Public Leaderboards</a>
+      </div>
+    </div>
+
+    <!-- Admin Dashboard (Initially Hidden) -->
+    <div id="dashboardScreen" style="display: none;">
+      <header class="admin-nav">
+        <div class="brand">
+          <div class="logo-badge" style="background: rgba(168, 85, 247, 0.2); border-color: rgba(168, 85, 247, 0.3);">
+            ⚙️
+          </div>
+          <div class="brand-text">
+            <h1>League Manager</h1>
+            <span class="badge-online" style="color: var(--accent-purple);"><span class="dot" style="background-color: var(--accent-purple);"></span> Authenticated as Root</span>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+          <a href="/" class="btn-secondary">🌐 Public Leaderboards</a>
+          <button id="logoutBtn" class="btn-secondary" style="color: #f87171;">Logout</button>
+        </div>
+      </header>
+
+      <div id="actionAlert" class="alert-box"></div>
+
+      <!-- Create League Form -->
+      <section class="create-card">
+        <h3>✨ Create New League</h3>
+        <form id="createLeagueForm">
+          <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 16px; margin-bottom: 16px;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="leagueName">League Name *</label>
+              <input type="text" id="leagueName" class="form-input" placeholder="e.g. Summer Cup 2026" required>
+            </div>
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="leagueDesc">Description</label>
+              <input type="text" id="leagueDesc" class="form-input" placeholder="e.g. Competitive tournament across medium & hard levels">
+            </div>
+          </div>
+          <button type="submit" class="btn-submit" style="width: auto; padding: 10px 24px;">➕ Create League</button>
+        </form>
+      </section>
+
+      <!-- Leagues Table -->
+      <section class="leaderboard-section">
+        <div class="table-header-bar">
+          <div class="table-title">
+            <h2>Current Registered Leagues</h2>
+            <span class="entries-counter" id="leagueCounter">0 leagues</span>
+          </div>
+          <button id="refreshLeaguesBtn" class="btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;">🔄 Refresh</button>
+        </div>
+
+        <div class="table-responsive">
+          <table class="leaderboard-table">
+            <thead>
+              <tr>
+                <th>League Name</th>
+                <th>Description</th>
+                <th>Players</th>
+                <th>Levels Tackled</th>
+                <th style="text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="leaguesTableBody">
+              <tr>
+                <td colspan="5" class="loading-state">Loading leagues...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    let authHeader = '';
+
+    const loginScreen = document.getElementById('loginScreen');
+    const dashboardScreen = document.getElementById('dashboardScreen');
+    const loginForm = document.getElementById('loginForm');
+    const loginAlert = document.getElementById('loginAlert');
+    const actionAlert = document.getElementById('actionAlert');
+    const createLeagueForm = document.getElementById('createLeagueForm');
+    const leaguesTableBody = document.getElementById('leaguesTableBody');
+    const leagueCounter = document.getElementById('leagueCounter');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const refreshLeaguesBtn = document.getElementById('refreshLeaguesBtn');
+
+    // Auto-check stored session
+    const savedAuth = sessionStorage.getItem('wikilynx_admin_auth');
+    if (savedAuth) {
+      authHeader = savedAuth;
+      showDashboard();
+    }
+
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const user = document.getElementById('adminId').value.trim();
+      const pass = document.getElementById('adminPass').value.trim();
+
+      const encoded = 'Basic ' + btoa(user + ':' + pass);
+
+      try {
+        const res = await fetch('/api/admin/leagues', {
+          headers: { 'Authorization': encoded }
+        });
+
+        if (res.ok) {
+          authHeader = encoded;
+          sessionStorage.setItem('wikilynx_admin_auth', encoded);
+          showDashboard();
+        } else {
+          showLoginError('Invalid Admin ID or Password. (Required: root / 1234561)');
+        }
+      } catch (err) {
+        showLoginError('Connection error: ' + err.message);
+      }
+    });
+
+    logoutBtn.addEventListener('click', () => {
+      sessionStorage.removeItem('wikilynx_admin_auth');
+      authHeader = '';
+      dashboardScreen.style.display = 'none';
+      loginScreen.style.display = 'block';
+    });
+
+    refreshLeaguesBtn.addEventListener('click', loadAdminLeagues);
+
+    createLeagueForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('leagueName').value.trim();
+      const desc = document.getElementById('leagueDesc').value.trim();
+
+      if (!name) return;
+
+      try {
+        const res = await fetch('/api/admin/leagues', {
+          method: 'POST',
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ name, description: desc })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          showAlert(`League "${name}" created successfully!`, 'success');
+          document.getElementById('leagueName').value = '';
+          document.getElementById('leagueDesc').value = '';
+          loadAdminLeagues();
+        } else {
+          showAlert(`Failed to create league: ${data.message}`, 'error');
+        }
+      } catch (err) {
+        showAlert('Error: ' + err.message, 'error');
+      }
+    });
+
+    async function loadAdminLeagues() {
+      try {
+        const res = await fetch('/api/admin/leagues', {
+          headers: { 'Authorization': authHeader }
+        });
+
+        if (!res.ok) {
+          if (res.status === 401) {
+            logoutBtn.click();
+            return;
+          }
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const leagues = await res.json() || [];
+        leagueCounter.textContent = `${leagues.length} league${leagues.length === 1 ? '' : 's'}`;
+
+        if (leagues.length === 0) {
+          leaguesTableBody.innerHTML = `<tr><td colspan="5" class="loading-state">No leagues found.</td></tr>`;
+          return;
+        }
+
+        leaguesTableBody.innerHTML = leagues.map(l => `
+          <tr>
+            <td>
+              <strong style="color: var(--primary); font-size: 1.05rem;">${escapeHtml(l.name)}</strong>
+            </td>
+            <td style="color: var(--text-secondary); max-width: 320px;">
+              ${escapeHtml(l.description || 'No description provided')}
+            </td>
+            <td>
+              <span class="mono-cell">${l.totalPlayers || 0}</span>
+            </td>
+            <td>
+              <span class="mono-cell">${l.totalLevels || 0}</span>
+            </td>
+            <td style="text-align: right;">
+              <button class="btn-danger" onclick="deleteLeague('${escapeHtml(l.name)}')">Delete</button>
+            </td>
+          </tr>
+        `).join('');
+      } catch (err) {
+        leaguesTableBody.innerHTML = `<tr><td colspan="5" class="loading-state" style="color: #ef4444;">Failed to load: ${escapeHtml(err.message)}</td></tr>`;
+      }
+    }
+
+    async function deleteLeague(name) {
+      if (!confirm(`Are you sure you want to delete the league "${name}"?`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/admin/leagues?name=${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': authHeader }
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          showAlert(`League "${name}" deleted successfully.`, 'success');
+          loadAdminLeagues();
+        } else {
+          showAlert(`Delete failed: ${data.message}`, 'error');
+        }
+      } catch (err) {
+        showAlert('Error: ' + err.message, 'error');
+      }
+    }
+
+    function showDashboard() {
+      loginScreen.style.display = 'none';
+      dashboardScreen.style.display = 'block';
+      loadAdminLeagues();
+    }
+
+    function showLoginError(msg) {
+      loginAlert.textContent = msg;
+      loginAlert.style.display = 'block';
+    }
+
+    function showAlert(msg, type) {
+      actionAlert.textContent = msg;
+      actionAlert.className = `alert-box alert-${type}`;
+      actionAlert.style.display = 'block';
+      setTimeout(() => {
+        actionAlert.style.display = 'none';
+      }, 4000);
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+  </script>
+</body>
+</html>

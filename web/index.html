@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WikiLYNX | Leagues & Level Leaderboards</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="background-glow glow-1"></div>
+  <div class="background-glow glow-2"></div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="logo-badge">
+          <svg class="lynx-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>WikiLYNX</h1>
+          <span class="badge-online"><span class="dot"></span> Online Leaderboards & Leagues</span>
+        </div>
+      </div>
+
+      <div class="nav-controls">
+        <a href="/admin" class="btn btn-secondary" style="font-size: 0.8rem; padding: 6px 12px; border-radius: var(--radius-full); text-decoration: none;" title="Manage Leagues (Admin)">
+          ⚙️ Admin
+        </a>
+        <div class="refresh-group">
+          <button id="refreshBtn" class="btn btn-icon" title="Refresh Leaderboard">
+            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
+          <label class="auto-refresh-toggle" title="Auto-refresh every 10s">
+            <input type="checkbox" id="autoRefreshToggle" checked>
+            <span class="toggle-slider"></span>
+            <span class="toggle-label">Auto</span>
+          </label>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Selector & Filter Section -->
+      <section class="controls-panel">
+        <div class="level-select-container">
+          <label for="levelSelect" class="control-label">
+            <svg class="label-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 6h16M4 12h16M4 18h7"/>
+            </svg>
+            Select Leaderboard:
+          </label>
+          <div class="select-wrapper">
+            <select id="levelSelect" class="custom-select">
+              <option value="" disabled selected>Loading leagues & levels...</option>
+            </select>
+            <div class="select-arrow">▼</div>
+          </div>
+        </div>
+
+        <div class="search-container">
+          <div class="search-box">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="playerSearch" placeholder="Search player or ID..." autocomplete="off">
+            <button id="clearSearch" class="btn-clear" style="display: none;">&times;</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Highlights / Summary Cards -->
+      <section class="stats-grid" id="statsGrid">
+        <div class="stat-card">
+          <div class="stat-icon-wrapper gold-accent">🏆</div>
+          <div class="stat-info">
+            <span class="stat-label" id="topRecordLabel">Top Score</span>
+            <span class="stat-value" id="topRecordScore">--</span>
+            <span class="stat-subtext" id="topRecordPlayer">No records yet</span>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon-wrapper cyan-accent">👥</div>
+          <div class="stat-info">
+            <span class="stat-label">Competitors</span>
+            <span class="stat-value" id="totalPlayersCount">0</span>
+            <span class="stat-subtext" id="totalPlayersSub">In this leaderboard</span>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon-wrapper emerald-accent">⚡</div>
+          <div class="stat-info">
+            <span class="stat-label" id="card3Label">Best Metric</span>
+            <span class="stat-value" id="card3Value">--</span>
+            <span class="stat-subtext" id="card3Sub">Efficiency</span>
+          </div>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-icon-wrapper purple-accent">🎯</div>
+          <div class="stat-info">
+            <span class="stat-label">Current Selection</span>
+            <span class="stat-value text-truncate" id="activeLevelBadge">--</span>
+            <span class="stat-subtext" id="activeLevelSub">Mode</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Leaderboard Table Container -->
+      <section class="leaderboard-section">
+        <div class="table-header-bar">
+          <div class="table-title">
+            <div class="type-pill" id="typePill">LEVEL</div>
+            <h2 id="tableHeading">Leaderboard Rankings</h2>
+            <span class="entries-counter" id="entriesCount">0 players</span>
+          </div>
+          <div id="lastUpdated" class="last-updated">Updated: Just now</div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="leaderboard-table" id="leaderboardTable">
+            <thead id="tableHead">
+              <!-- Dynamically rendered according to Level or League mode -->
+            </thead>
+            <tbody id="leaderboardBody">
+              <tr>
+                <td colspan="8" class="loading-state">
+                  <div class="spinner"></div>
+                  <span>Fetching leaderboard records...</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Empty State -->
+        <div id="emptyState" class="empty-state" style="display: none;">
+          <div class="empty-icon">🎮</div>
+          <h3>No Records Found</h3>
+          <p id="emptyMessage">No players have recorded stats in this category yet. Be the first to compete!</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="footer-content">
+        <p>WikiLYNX Speedrun & Wiki-Navigation Leaderboard Server</p>
+        <p class="server-status">API: <code>/api/score</code> • <code>/api/leaderboard</code> • <code>/api/leagues</code> • <code>/api/levels</code></p>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

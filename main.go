@@ -1,0 +1,503 @@
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type ScoreRequest struct {
+	Level       string      `json:"level"`
+	League      string      `json:"league"`
+	Difficulty  interface{} `json:"difficulty"` // "easy", "medium", "hard", or numeric float
+	UserID      string      `json:"userId"`
+	Username    string      `json:"username"`
+	Time        interface{} `json:"time"` // float or string
+	Clicks      interface{} `json:"clicks"`
+	Status      interface{} `json:"status"` // 0 = Lose, 1 = Win (accepts int, bool, or string)
+	Checkpoints interface{} `json:"checkpoints"`
+}
+
+type APIResponse struct {
+	Success bool        `json:"success"`
+	Message string      `json:"message,omitempty"`
+	Data    interface{} `json:"data,omitempty"`
+	Rank    int         `json:"rank,omitempty"`
+	Score   float64     `json:"score,omitempty"`
+	IsNew   bool        `json:"isNew,omitempty"`
+}
+
+func parseStatus(val interface{}) int {
+	if val == nil {
+		return 1 // Default: Win (1)
+	}
+	switch v := val.(type) {
+	case bool:
+		if v {
+			return 1
+		}
+		return 0
+	case float64:
+		if int(v) == 0 {
+			return 0
+		}
+		return 1
+	case int:
+		if v == 0 {
+			return 0
+		}
+		return 1
+	case string:
+		s := strings.TrimSpace(strings.ToLower(v))
+		if s == "0" || s == "false" || s == "lose" || s == "loss" || s == "lost" || s == "failed" {
+			return 0
+		}
+		return 1
+	default:
+		return 1
+	}
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		log.Printf("Error encoding JSON response: %v", err)
+	}
+}
+
+func parseNumber(val interface{}) (float64, error) {
+	switch v := val.(type) {
+	case float64:
+		return v, nil
+	case float32:
+		return float64(v), nil
+	case int:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case string:
+		return strconv.ParseFloat(strings.TrimSpace(v), 64)
+	default:
+		return 0, fmt.Errorf("unexpected numeric type: %T", val)
+	}
+}
+
+func handleScoreSubmit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+
+	var req ScoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid JSON: " + err.Error()})
+		return
+	}
+
+	level := strings.TrimSpace(req.Level)
+	if level == "" {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "level is required"})
+		return
+	}
+
+	userID := strings.TrimSpace(req.UserID)
+	if userID == "" {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "userId is required"})
+		return
+	}
+
+	username := strings.TrimSpace(req.Username)
+	if username == "" {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "username is required"})
+		return
+	}
+
+	if req.Time == nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "time is required"})
+		return
+	}
+	timeTaken, err := parseNumber(req.Time)
+	if err != nil || timeTaken < 0 {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "time must be a valid non-negative number"})
+		return
+	}
+
+	if req.Clicks == nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "clicks is required"})
+		return
+	}
+	clicksF, err := parseNumber(req.Clicks)
+	if err != nil || clicksF < 0 {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "clicks must be a valid non-negative integer"})
+		return
+	}
+	clicks := int(clicksF)
+
+	if req.Difficulty == nil || strings.TrimSpace(fmt.Sprintf("%v", req.Difficulty)) == "" {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "difficulty is required (0.0 to 1.0 or 'easy', 'medium', 'hard', 'insane')"})
+		return
+	}
+
+	if req.Status == nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "status is required (1 for win, 0 for lose)"})
+		return
+	}
+	status := parseStatus(req.Status)
+
+	if req.Checkpoints == nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "checkpoints is required (pass 0 if none)"})
+		return
+	}
+	chkF, err := parseNumber(req.Checkpoints)
+	if err != nil || chkF < 0 {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "checkpoints must be a valid non-negative integer (pass 0 if none)"})
+		return
+	}
+	checkpoints := int(chkF)
+
+	league := strings.TrimSpace(req.League)
+	if league == "" {
+		league = "Global Championship"
+	}
+
+	// Compute score based on time, clicks, difficulty (0.0 to 1.0), status (1/0), and checkpoints
+	score, diffName := CalculateScore(timeTaken, clicks, req.Difficulty, status, checkpoints)
+
+	entry := ScoreEntry{
+		Level:       level,
+		League:      league,
+		UserID:      userID,
+		Username:    username,
+		TimeTaken:   timeTaken,
+		Clicks:      clicks,
+		Score:       score,
+		Difficulty:  diffName,
+		Status:      status,
+		Checkpoints: checkpoints,
+	}
+
+	rank, isNew, err := SaveScore(entry)
+	if err != nil {
+		log.Printf("Error saving score: %v", err)
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: "Database error: " + err.Error()})
+		return
+	}
+
+	log.Printf("[Score Submitted] Level=%s, League=%s, Player=%s (%s), Time=%.2fs, Clicks=%d, Diff=%s, Score=%.0f, Rank=%d",
+		level, league, username, userID, timeTaken, clicks, diffName, score, rank)
+
+	jsonResponse(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: "Score recorded successfully",
+		Rank:    rank,
+		Score:   score,
+		IsNew:   isNew,
+		Data:    entry,
+	})
+}
+
+func handleGetLeaderboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+
+	leagueParam := strings.TrimSpace(r.URL.Query().Get("league"))
+	levelParam := strings.TrimSpace(r.URL.Query().Get("level"))
+
+	// If league query parameter is provided, return aggregated league leaderboard
+	if leagueParam != "" {
+		entries, err := GetLeagueLeaderboard(leagueParam)
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"type":    "league",
+			"league":  leagueParam,
+			"count":   len(entries),
+			"scores":  entries,
+		})
+		return
+	}
+
+	// Otherwise level leaderboard
+	level := levelParam
+	if level == "" {
+		levels, err := GetLevels()
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+		if len(levels) > 0 {
+			level = levels[0].Name
+		} else {
+			jsonResponse(w, http.StatusOK, map[string]interface{}{
+				"type":   "level",
+				"level":  "",
+				"count":  0,
+				"scores": []ScoreEntry{},
+			})
+			return
+		}
+	}
+
+	scores, err := GetLeaderboard(level)
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"type":   "level",
+		"level":  level,
+		"count":  len(scores),
+		"scores": scores,
+	})
+}
+
+const (
+	AdminUser = "root"
+	AdminPass = "1234561"
+)
+
+func checkAdminAuth(r *http.Request) bool {
+	u, p, ok := r.BasicAuth()
+	if ok && u == AdminUser && p == AdminPass {
+		return true
+	}
+	if r.Header.Get("X-Admin-Password") == AdminPass || r.Header.Get("X-Admin-Key") == AdminPass {
+		return true
+	}
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") && strings.TrimPrefix(authHeader, "Bearer ") == AdminPass {
+		return true
+	}
+	return false
+}
+
+func requireAdminAuth(w http.ResponseWriter, r *http.Request) bool {
+	if !checkAdminAuth(r) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="WikiLYNX Admin"`)
+		jsonResponse(w, http.StatusUnauthorized, APIResponse{
+			Success: false,
+			Message: "Unauthorized: Admin credentials (root:1234561) required",
+		})
+		return false
+	}
+	return true
+}
+
+func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+	var creds struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&creds)
+	if creds.Username == AdminUser && creds.Password == AdminPass {
+		jsonResponse(w, http.StatusOK, APIResponse{
+			Success: true,
+			Message: "Authentication successful",
+			Data:    map[string]string{"token": AdminPass},
+		})
+		return
+	}
+	jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid admin credentials"})
+}
+
+func handleAdminLeagues(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminAuth(w, r) {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		leagues, err := GetLeagues()
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, leagues)
+
+	case http.MethodPost:
+		var req struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid JSON: " + err.Error()})
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "League name is required"})
+			return
+		}
+		if err := CreateLeague(name, req.Description); err != nil {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+		log.Printf("[Admin] Created League: %s", name)
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "League created successfully"})
+
+	case http.MethodDelete:
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" {
+			var req struct {
+				Name string `json:"name"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			name = strings.TrimSpace(req.Name)
+		}
+		if name == "" {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "League name is required to delete"})
+			return
+		}
+		if err := DeleteLeague(name); err != nil {
+			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+		log.Printf("[Admin] Deleted League: %s", name)
+		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "League deleted successfully"})
+
+	default:
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+	}
+}
+
+func handleGetLeagues(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+
+	// If detailed=true, return full objects with player counts
+	if r.URL.Query().Get("detailed") == "true" {
+		leagues, err := GetLeagues()
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, leagues)
+		return
+	}
+
+	// Default: return a clean JSON list of names of available leagues
+	names, err := GetLeagueNames()
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, names)
+}
+
+func handleGetLevels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+
+	levels, err := GetLevels()
+	if err != nil {
+		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, levels)
+}
+
+func main() {
+	portFlag := flag.String("port", "8080", "HTTP server port")
+	dbFlag := flag.String("db", "wikilynx.db", "SQLite database path")
+	flag.Parse()
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = *portFlag
+	}
+
+	// Initialize DB
+	database, err := initDB(*dbFlag)
+	if err != nil {
+		log.Fatalf("Database initialization failed: %v", err)
+	}
+	defer database.Close()
+
+	mux := http.NewServeMux()
+
+	// Public API Endpoints
+	mux.HandleFunc("/api/score", handleScoreSubmit)
+	mux.HandleFunc("/api/leaderboard", handleGetLeaderboard)
+	mux.HandleFunc("/api/leagues", handleGetLeagues)
+	mux.HandleFunc("/api/levels", handleGetLevels)
+	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"status": "healthy",
+			"time":   time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+
+	// Admin API Endpoints (Protected with root:1234561)
+	mux.HandleFunc("/api/admin/login", handleAdminLogin)
+	mux.HandleFunc("/api/admin/leagues", handleAdminLeagues)
+
+	// Admin Web Interface Page
+	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, filepath.Join(".", "web", "admin.html"))
+	})
+
+	// Static files for public web interface
+	webDir := filepath.Join(".", "web")
+	if _, err := os.Stat(webDir); os.IsNotExist(err) {
+		_ = os.MkdirAll(webDir, 0755)
+	}
+	fileServer := http.FileServer(http.Dir(webDir))
+	mux.Handle("/", fileServer)
+
+	addr := ":" + port
+	fmt.Println("=========================================")
+	fmt.Println("   WikiLYNX Level & League Leaderboards")
+	fmt.Printf("   Listening on http://localhost:%s\n", port)
+	fmt.Println("   Endpoints:")
+	fmt.Println("     GET    /                  (Public Web Interface)")
+	fmt.Println("     GET    /admin             (Secured Admin Web Interface)")
+	fmt.Println("     POST   /api/score         (Submit Score)")
+	fmt.Println("     GET    /api/leaderboard   (Get Scores)")
+	fmt.Println("     GET    /api/leagues       (List of League Names)")
+	fmt.Println("     POST   /api/admin/leagues (Create League - Auth Required)")
+	fmt.Println("     DELETE /api/admin/leagues (Delete League - Auth Required)")
+	fmt.Println("=========================================")
+
+	handler := corsMiddleware(mux)
+	if err := http.ListenAndServe(addr, handler); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
+}
