@@ -198,8 +198,36 @@ func handleScoreSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	league := strings.TrimSpace(req.League)
-	if league == "" {
-		league = "Global Championship"
+	if league != "" {
+		locked, err := IsLeagueLocked(league)
+		if err == nil && locked {
+			log.Printf("[Score Rejected] Submission attempted to locked league %q by %s (%s)", league, username, userID)
+			jsonResponse(w, http.StatusForbidden, APIResponse{
+				Success: false,
+				Message: fmt.Sprintf("League %q is locked and is not currently accepting score submissions", league),
+			})
+			return
+		}
+
+		allowedLevels, err := GetLeagueLevels(league)
+		if err == nil && len(allowedLevels) > 0 {
+			allowed := false
+			for _, al := range allowedLevels {
+				if strings.EqualFold(strings.TrimSpace(al), level) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				log.Printf("[Score Rejected] Level %q is not permitted in league %q (allowed: %v) by %s (%s)",
+					level, league, allowedLevels, username, userID)
+				jsonResponse(w, http.StatusBadRequest, APIResponse{
+					Success: false,
+					Message: fmt.Sprintf("Level %q is not a permitted playable level in league %q. Allowed: %s", level, league, strings.Join(allowedLevels, ", ")),
+				})
+				return
+			}
+		}
 	}
 
 	// Compute score based on time, clicks, difficulty (0.0 to 1.0), status (1/0), and checkpoint progress %
@@ -351,6 +379,46 @@ func handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusUnauthorized, APIResponse{Success: false, Message: "Invalid admin credentials"})
 }
 
+func handleAdminLeagueLock(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+	var req struct {
+		Name   string `json:"name"`
+		Locked *bool  `json:"locked"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid JSON: " + err.Error()})
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "League name is required"})
+		return
+	}
+	if req.Locked == nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "'locked' (boolean) is required"})
+		return
+	}
+	if err := SetLeagueLock(name, *req.Locked); err != nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+	action := "unlocked"
+	if *req.Locked {
+		action = "locked"
+	}
+	log.Printf("[Admin] League %q has been %s", name, action)
+	jsonResponse(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: fmt.Sprintf("League %q successfully %s", name, action),
+	})
+}
+
 func handleAdminLeagues(w http.ResponseWriter, r *http.Request) {
 	if !requireAdminAuth(w, r) {
 		return
@@ -358,7 +426,8 @@ func handleAdminLeagues(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		leagues, err := GetLeagues()
+		// Admin gets all leagues including locked ones
+		leagues, err := GetLeagues(true)
 		if err != nil {
 			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 			return
@@ -367,8 +436,9 @@ func handleAdminLeagues(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
+			Name        string      `json:"name"`
+			Description string      `json:"description"`
+			Levels      interface{} `json:"levels"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid JSON: " + err.Error()})
@@ -379,12 +449,16 @@ func handleAdminLeagues(w http.ResponseWriter, r *http.Request) {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "League name is required"})
 			return
 		}
-		if err := CreateLeague(name, req.Description); err != nil {
+		levels := parseLevelsInput(req.Levels)
+		if err := CreateLeague(name, req.Description, levels); err != nil {
 			jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
 			return
 		}
-		log.Printf("[Admin] Created League: %s", name)
+		log.Printf("[Admin] Created League: %s (playable levels: %v)", name, levels)
 		jsonResponse(w, http.StatusOK, APIResponse{Success: true, Message: "League created successfully"})
+
+	case http.MethodPatch:
+		handleAdminLeagueLock(w, r)
 
 	case http.MethodDelete:
 		name := strings.TrimSpace(r.URL.Query().Get("name"))
@@ -411,15 +485,83 @@ func handleAdminLeagues(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func parseLevelsInput(val interface{}) []string {
+	if val == nil {
+		return []string{}
+	}
+	var levels []string
+	switch v := val.(type) {
+	case []interface{}:
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprintf("%v", item)); s != "" {
+				levels = append(levels, s)
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if tr := strings.TrimSpace(s); tr != "" {
+				levels = append(levels, tr)
+			}
+		}
+	case string:
+		parts := strings.Split(v, ",")
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				levels = append(levels, s)
+			}
+		}
+	}
+	if levels == nil {
+		return []string{}
+	}
+	return levels
+}
+
+func handleAdminLeagueLevels(w http.ResponseWriter, r *http.Request) {
+	if !requireAdminAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodPatch && r.Method != http.MethodPut {
+		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
+		return
+	}
+	var req struct {
+		Name   string      `json:"name"`
+		Levels interface{} `json:"levels"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "Invalid JSON: " + err.Error()})
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "League name is required"})
+		return
+	}
+	levels := parseLevelsInput(req.Levels)
+	if err := SetLeagueLevels(name, levels); err != nil {
+		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: err.Error()})
+		return
+	}
+	log.Printf("[Admin] League %q playable levels updated: %v", name, levels)
+	jsonResponse(w, http.StatusOK, APIResponse{
+		Success: true,
+		Message: fmt.Sprintf("Playable levels updated for league %q", name),
+		Data:    levels,
+	})
+}
+
 func handleGetLeagues(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonResponse(w, http.StatusMethodNotAllowed, APIResponse{Success: false, Message: "Method not allowed"})
 		return
 	}
 
-	// If detailed=true, return full objects with player counts
+	includeLocked := r.URL.Query().Get("includeLocked") == "true"
+
+	// If detailed=true, return full objects with player counts and stats
 	if r.URL.Query().Get("detailed") == "true" {
-		leagues, err := GetLeagues()
+		leagues, err := GetLeagues(includeLocked)
 		if err != nil {
 			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 			return
@@ -428,14 +570,25 @@ func handleGetLeagues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default: return a clean JSON list of names of available leagues
-	names, err := GetLeagueNames()
+	// If plain string list is requested (for backwards compatibility)
+	if r.URL.Query().Get("plain") == "true" || r.URL.Query().Get("namesOnly") == "true" {
+		names, err := GetLeagueNames(includeLocked)
+		if err != nil {
+			jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
+			return
+		}
+		jsonResponse(w, http.StatusOK, names)
+		return
+	}
+
+	// Default: return list of active leagues with allowed playable levels
+	items, err := GetActiveLeagues(includeLocked)
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, APIResponse{Success: false, Message: err.Error()})
 		return
 	}
 
-	jsonResponse(w, http.StatusOK, names)
+	jsonResponse(w, http.StatusOK, items)
 }
 
 func handleGetLevels(w http.ResponseWriter, r *http.Request) {
@@ -487,6 +640,8 @@ func main() {
 	// Admin API Endpoints (Protected with root:1234561)
 	mux.HandleFunc("/api/admin/login", handleAdminLogin)
 	mux.HandleFunc("/api/admin/leagues", handleAdminLeagues)
+	mux.HandleFunc("/api/admin/leagues/lock", handleAdminLeagueLock)
+	mux.HandleFunc("/api/admin/leagues/levels", handleAdminLeagueLevels)
 
 	// Admin Web Interface Page
 	mux.HandleFunc("/admin", func(w http.ResponseWriter, r *http.Request) {
@@ -506,13 +661,15 @@ func main() {
 	fmt.Println("   WikiLYNX Level & League Leaderboards")
 	fmt.Printf("   Listening on http://localhost:%s\n", port)
 	fmt.Println("   Endpoints:")
-	fmt.Println("     GET    /                  (Public Web Interface)")
-	fmt.Println("     GET    /admin             (Secured Admin Web Interface)")
-	fmt.Println("     POST   /api/score         (Submit Score)")
-	fmt.Println("     GET    /api/leaderboard   (Get Scores)")
-	fmt.Println("     GET    /api/leagues       (List of League Names)")
-	fmt.Println("     POST   /api/admin/leagues (Create League - Auth Required)")
-	fmt.Println("     DELETE /api/admin/leagues (Delete League - Auth Required)")
+	fmt.Println("     GET    /                          (Public Web Interface)")
+	fmt.Println("     GET    /admin                     (Secured Admin Web Interface)")
+	fmt.Println("     POST   /api/score                 (Submit Score)")
+	fmt.Println("     GET    /api/leaderboard           (Get Scores)")
+	fmt.Println("     GET    /api/leagues               (List of Active Leagues & Levels)")
+	fmt.Println("     POST   /api/admin/leagues         (Create League - Auth Required)")
+	fmt.Println("     POST   /api/admin/leagues/lock    (Lock/Unlock League - Auth Required)")
+	fmt.Println("     POST   /api/admin/leagues/levels  (Set Playable Levels - Auth Required)")
+	fmt.Println("     DELETE /api/admin/leagues         (Delete League - Auth Required)")
 	fmt.Println("=========================================")
 
 	handler := corsMiddleware(mux)

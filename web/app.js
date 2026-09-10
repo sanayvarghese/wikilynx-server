@@ -168,13 +168,13 @@ function resolveInitialSelection() {
     return;
   }
 
-  // Default priority: Global Championship league or first available league/level
+  // Default priority: first available league or level
   if (state.leagues.length > 0) {
-    const globalLeague = state.leagues.find(l => l.name === 'Global Championship') || state.leagues[0];
+    const firstLeague = state.leagues[0];
     state.viewType = 'league';
-    state.currentSelection = globalLeague.name;
-    levelSelect.value = `league:${globalLeague.name}`;
-    updateUrlParams('league', globalLeague.name);
+    state.currentSelection = firstLeague.name;
+    levelSelect.value = `league:${firstLeague.name}`;
+    updateUrlParams('league', firstLeague.name);
   } else if (state.levels.length > 0) {
     state.viewType = 'level';
     state.currentSelection = state.levels[0].name;

@@ -149,6 +149,86 @@
       border: 1px solid rgba(0, 230, 118, 0.3);
       color: var(--primary);
     }
+    .badge-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .badge-active {
+      background: rgba(0, 230, 118, 0.15);
+      border: 1px solid rgba(0, 230, 118, 0.35);
+      color: var(--primary);
+    }
+    .badge-locked {
+      background: rgba(234, 179, 8, 0.15);
+      border: 1px solid rgba(234, 179, 8, 0.4);
+      color: #facc15;
+    }
+    .btn-lock {
+      background: rgba(234, 179, 8, 0.15);
+      border: 1px solid rgba(234, 179, 8, 0.35);
+      color: #facc15;
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+    .btn-lock:hover {
+      background: rgba(234, 179, 8, 0.3);
+      border-color: #facc15;
+      color: #fff;
+    }
+    .btn-unlock {
+      background: rgba(0, 230, 118, 0.15);
+      border: 1px solid rgba(0, 230, 118, 0.35);
+      color: var(--primary);
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+    .btn-unlock:hover {
+      background: rgba(0, 230, 118, 0.3);
+      border-color: var(--primary);
+      color: #fff;
+    }
+    .badge-level {
+      display: inline-block;
+      background: rgba(59, 130, 246, 0.15);
+      border: 1px solid rgba(59, 130, 246, 0.35);
+      color: #60a5fa;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 0.76rem;
+      font-family: var(--font-mono);
+      margin: 2px 3px 2px 0;
+    }
+    .btn-edit-levels {
+      background: rgba(168, 85, 247, 0.15);
+      border: 1px solid rgba(168, 85, 247, 0.35);
+      color: #c084fc;
+      padding: 6px 10px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+    .btn-edit-levels:hover {
+      background: rgba(168, 85, 247, 0.3);
+      border-color: #c084fc;
+      color: #fff;
+    }
   </style>
 </head>
 <body>
@@ -208,7 +288,7 @@
       <section class="create-card">
         <h3>✨ Create New League</h3>
         <form id="createLeagueForm">
-          <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 16px; margin-bottom: 16px;">
+          <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 16px; margin-bottom: 14px;">
             <div class="form-group" style="margin-bottom: 0;">
               <label class="form-label" for="leagueName">League Name *</label>
               <input type="text" id="leagueName" class="form-input" placeholder="e.g. Summer Cup 2026" required>
@@ -217,6 +297,10 @@
               <label class="form-label" for="leagueDesc">Description</label>
               <input type="text" id="leagueDesc" class="form-input" placeholder="e.g. Competitive tournament across medium & hard levels">
             </div>
+          </div>
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label class="form-label" for="leagueLevels">Playable Levels (optional, comma-separated)</label>
+            <input type="text" id="leagueLevels" class="form-input" placeholder="e.g. flyingduck, cattomosfet!, Level 1 (leave blank if all levels are allowed)">
           </div>
           <button type="submit" class="btn-submit" style="width: auto; padding: 10px 24px;">➕ Create League</button>
         </form>
@@ -237,6 +321,8 @@
             <thead>
               <tr>
                 <th>League Name</th>
+                <th>Status</th>
+                <th>Playable Levels</th>
                 <th>Description</th>
                 <th>Players</th>
                 <th>Levels Tackled</th>
@@ -245,7 +331,7 @@
             </thead>
             <tbody id="leaguesTableBody">
               <tr>
-                <td colspan="5" class="loading-state">Loading leagues...</td>
+                <td colspan="7" class="loading-state">Loading leagues...</td>
               </tr>
             </tbody>
           </table>
@@ -312,6 +398,7 @@
       e.preventDefault();
       const name = document.getElementById('leagueName').value.trim();
       const desc = document.getElementById('leagueDesc').value.trim();
+      const levelsStr = document.getElementById('leagueLevels').value.trim();
 
       if (!name) return;
 
@@ -322,7 +409,7 @@
             'Authorization': authHeader,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ name, description: desc })
+          body: JSON.stringify({ name, description: desc, levels: levelsStr })
         });
 
         const data = await res.json();
@@ -330,6 +417,7 @@
           showAlert(`League "${name}" created successfully!`, 'success');
           document.getElementById('leagueName').value = '';
           document.getElementById('leagueDesc').value = '';
+          document.getElementById('leagueLevels').value = '';
           loadAdminLeagues();
         } else {
           showAlert(`Failed to create league: ${data.message}`, 'error');
@@ -357,16 +445,28 @@
         leagueCounter.textContent = `${leagues.length} league${leagues.length === 1 ? '' : 's'}`;
 
         if (leagues.length === 0) {
-          leaguesTableBody.innerHTML = `<tr><td colspan="5" class="loading-state">No leagues found.</td></tr>`;
+          leaguesTableBody.innerHTML = `<tr><td colspan="7" class="loading-state">No leagues found.</td></tr>`;
           return;
         }
 
         leaguesTableBody.innerHTML = leagues.map(l => `
-          <tr>
+          <tr style="${l.isLocked ? 'background: rgba(234, 179, 8, 0.03);' : ''}">
             <td>
-              <strong style="color: var(--primary); font-size: 1.05rem;">${escapeHtml(l.name)}</strong>
+              <strong style="color: ${l.isLocked ? 'var(--text-secondary)' : 'var(--primary)'}; font-size: 1.05rem;">
+                ${escapeHtml(l.name)}
+              </strong>
             </td>
-            <td style="color: var(--text-secondary); max-width: 320px;">
+            <td>
+              ${l.isLocked 
+                ? '<span class="badge-status badge-locked">🔒 Locked</span>' 
+                : '<span class="badge-status badge-active">🟢 Active</span>'}
+            </td>
+            <td style="max-width: 220px;">
+              ${(l.levels && l.levels.length > 0)
+                ? l.levels.map(lvl => `<span class="badge-level">${escapeHtml(lvl)}</span>`).join('')
+                : '<span style="color: var(--text-muted); font-size: 0.82rem; font-style: italic;">All Levels</span>'}
+            </td>
+            <td style="color: var(--text-secondary); max-width: 260px;">
               ${escapeHtml(l.description || 'No description provided')}
             </td>
             <td>
@@ -375,13 +475,75 @@
             <td>
               <span class="mono-cell">${l.totalLevels || 0}</span>
             </td>
-            <td style="text-align: right;">
-              <button class="btn-danger" onclick="deleteLeague('${escapeHtml(l.name)}')">Delete</button>
+            <td style="text-align: right; white-space: nowrap;">
+              <button class="btn-edit-levels" onclick="editLeagueLevels('${escapeHtml(l.name)}', '${escapeHtml((l.levels || []).join(', '))}')">
+                🎯 Levels
+              </button>
+              <button class="${l.isLocked ? 'btn-unlock' : 'btn-lock'}" style="margin-left: 5px;" onclick="toggleLeagueLock('${escapeHtml(l.name)}', ${!l.isLocked})">
+                ${l.isLocked ? '🔓 Unlock' : '🔒 Lock'}
+              </button>
+              <button class="btn-danger" style="margin-left: 5px;" onclick="deleteLeague('${escapeHtml(l.name)}')">
+                🗑️ Delete
+              </button>
             </td>
           </tr>
         `).join('');
       } catch (err) {
-        leaguesTableBody.innerHTML = `<tr><td colspan="5" class="loading-state" style="color: #ef4444;">Failed to load: ${escapeHtml(err.message)}</td></tr>`;
+        leaguesTableBody.innerHTML = `<tr><td colspan="7" class="loading-state" style="color: #ef4444;">Failed to load: ${escapeHtml(err.message)}</td></tr>`;
+      }
+    }
+
+    async function editLeagueLevels(name, currentLevelsStr) {
+      const input = prompt(`Configure allowed playable levels for league "${name}":\n(Comma-separated level names, or leave empty to allow all levels)`, currentLevelsStr);
+      if (input === null) return;
+
+      try {
+        const res = await fetch('/api/admin/leagues/levels', {
+          method: 'POST',
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ name, levels: input })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          showAlert(`Playable levels for "${name}" updated successfully!`, 'success');
+          loadAdminLeagues();
+        } else {
+          showAlert(`Failed to update levels: ${data.message}`, 'error');
+        }
+      } catch (err) {
+        showAlert('Error: ' + err.message, 'error');
+      }
+    }
+
+    async function toggleLeagueLock(name, locked) {
+      const actionText = locked ? 'lock' : 'unlock';
+      if (!confirm(`Are you sure you want to ${actionText} the league "${name}"?\n${locked ? 'Locked leagues are hidden from the game client and reject score submissions.' : 'Unlocked leagues become visible to clients and can accept score submissions.'}`)) {
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/admin/leagues/lock', {
+          method: 'POST',
+          headers: {
+            'Authorization': authHeader,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ name, locked })
+        });
+
+        const data = await res.json();
+        if (res.ok) {
+          showAlert(`League "${name}" successfully ${locked ? 'locked' : 'unlocked'}!`, 'success');
+          loadAdminLeagues();
+        } else {
+          showAlert(`Action failed: ${data.message}`, 'error');
+        }
+      } catch (err) {
+        showAlert('Error: ' + err.message, 'error');
       }
     }
 

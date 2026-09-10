@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -36,12 +37,21 @@ type LevelInfo struct {
 }
 
 type LeagueInfo struct {
-	Name         string  `json:"name"`
-	Description  string  `json:"description"`
-	TotalPlayers int     `json:"totalPlayers"`
-	TotalLevels  int     `json:"totalLevels"`
-	TopPlayer    string  `json:"topPlayer"`
-	TopScore     float64 `json:"topScore"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Levels       []string `json:"levels"`
+	IsLocked     bool     `json:"isLocked"`
+	TotalPlayers int      `json:"totalPlayers"`
+	TotalLevels  int      `json:"totalLevels"`
+	TopPlayer    string   `json:"topPlayer"`
+	TopScore     float64  `json:"topScore"`
+}
+
+type LeagueItem struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Levels      []string `json:"levels"`
+	IsLocked    bool     `json:"isLocked,omitempty"`
 }
 
 type LeagueEntry struct {
@@ -84,6 +94,8 @@ func initDB(dataSourceName string) (*sql.DB, error) {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT UNIQUE NOT NULL,
 		description TEXT,
+		levels TEXT DEFAULT '',
+		is_locked INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
@@ -97,9 +109,6 @@ func initDB(dataSourceName string) (*sql.DB, error) {
 
 	// Migrate missing columns if level_leaderboards already existed
 	migrateColumns()
-
-	// Seed default leagues
-	seedLeagues()
 
 	// Backfill any zero scores with calculated values
 	recalculateAllScores()
@@ -144,7 +153,7 @@ func migrateColumns() {
 		_, _ = db.Exec("ALTER TABLE level_leaderboards ADD COLUMN difficulty TEXT DEFAULT '0.25'")
 	}
 	if !hasLeague {
-		_, _ = db.Exec("ALTER TABLE level_leaderboards ADD COLUMN league TEXT DEFAULT 'Global Championship'")
+		_, _ = db.Exec("ALTER TABLE level_leaderboards ADD COLUMN league TEXT DEFAULT ''")
 	}
 
 	// Normalize status to integer: 1 for Win, 0 for Lose
@@ -158,22 +167,32 @@ func migrateColumns() {
 	_, _ = db.Exec("UPDATE level_leaderboards SET difficulty = '1.00' WHERE difficulty IN ('expert', 'insane')")
 
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_leaderboards_league ON level_leaderboards(league)")
-}
 
-func seedLeagues() {
-	defaultLeagues := []struct {
-		name string
-		desc string
-	}{
-		{"Global Championship", "Official competitive league spanning all wiki speedrun levels."},
-		{"Speedrun Masters", "High-intensity league emphasizing rapid traversal and link efficiency."},
-		{"Wiki Explorers", "Casual league welcoming runs across all difficulty tiers."},
-	}
-
-	for _, l := range defaultLeagues {
-		_, _ = db.Exec(`
-			INSERT OR IGNORE INTO leagues (name, description)
-			VALUES (?, ?)`, l.name, l.desc)
+	// Migrate leagues table for is_locked and levels columns
+	rowsL, err := db.Query("PRAGMA table_info(leagues)")
+	if err == nil {
+		defer rowsL.Close()
+		hasLocked := false
+		hasLevels := false
+		for rowsL.Next() {
+			var cid int
+			var name, ctype string
+			var notnull, pk int
+			var dfltValue sql.NullString
+			if err := rowsL.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err == nil {
+				if name == "is_locked" {
+					hasLocked = true
+				} else if name == "levels" {
+					hasLevels = true
+				}
+			}
+		}
+		if !hasLocked {
+			_, _ = db.Exec("ALTER TABLE leagues ADD COLUMN is_locked INTEGER DEFAULT 0")
+		}
+		if !hasLevels {
+			_, _ = db.Exec("ALTER TABLE leagues ADD COLUMN levels TEXT DEFAULT ''")
+		}
 	}
 }
 
@@ -300,15 +319,9 @@ func CalculateScore(timeTaken float64, clicks int, diffVal interface{}, status i
 
 // SaveScore records or updates a player's score for a level and league.
 func SaveScore(entry ScoreEntry) (int, bool, error) {
-	if entry.League == "" {
-		entry.League = "Global Championship"
-	}
 	if entry.Difficulty == "" {
 		entry.Difficulty = "easy"
 	}
-
-	// Ensure league exists in leagues table
-	_, _ = db.Exec(`INSERT OR IGNORE INTO leagues (name, description) VALUES (?, 'Custom user-created league')`, entry.League)
 
 	var existingScore float64
 	var existingTime float64
@@ -365,17 +378,109 @@ func SaveScore(entry ScoreEntry) (int, bool, error) {
 	return rank, isNew, nil
 }
 
-// CreateLeague inserts a new league into the leagues table
-func CreateLeague(name, description string) error {
+func parseLevels(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "[]" {
+		return []string{}
+	}
+	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
+		var list []string
+		if err := json.Unmarshal([]byte(raw), &list); err == nil {
+			var res []string
+			for _, s := range list {
+				if tr := strings.TrimSpace(s); tr != "" {
+					res = append(res, tr)
+				}
+			}
+			if res == nil {
+				return []string{}
+			}
+			return res
+		}
+	}
+	parts := strings.Split(raw, ",")
+	var res []string
+	for _, p := range parts {
+		if tr := strings.TrimSpace(p); tr != "" {
+			res = append(res, tr)
+		}
+	}
+	if res == nil {
+		return []string{}
+	}
+	return res
+}
+
+func serializeLevels(levels []string) string {
+	if len(levels) == 0 {
+		return "[]"
+	}
+	var clean []string
+	for _, l := range levels {
+		if tr := strings.TrimSpace(l); tr != "" {
+			clean = append(clean, tr)
+		}
+	}
+	if len(clean) == 0 {
+		return "[]"
+	}
+	bytes, err := json.Marshal(clean)
+	if err != nil {
+		return "[]"
+	}
+	return string(bytes)
+}
+
+// CreateLeague inserts a new league into the leagues table with optional playable levels
+func CreateLeague(name, description string, levels ...[]string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("league name cannot be empty")
 	}
-	_, err := db.Exec(`INSERT INTO leagues (name, description) VALUES (?, ?)`, name, strings.TrimSpace(description))
+	lvlStr := "[]"
+	if len(levels) > 0 && len(levels[0]) > 0 {
+		lvlStr = serializeLevels(levels[0])
+	}
+	_, err := db.Exec(`INSERT INTO leagues (name, description, levels) VALUES (?, ?, ?)`, name, strings.TrimSpace(description), lvlStr)
 	if err != nil {
 		return fmt.Errorf("failed to create league (may already exist): %w", err)
 	}
 	return nil
+}
+
+// SetLeagueLevels updates the allowed playable levels for a league
+func SetLeagueLevels(name string, levels []string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("league name cannot be empty")
+	}
+	lvlStr := serializeLevels(levels)
+	res, err := db.Exec(`UPDATE leagues SET levels = ? WHERE name = ?`, lvlStr, name)
+	if err != nil {
+		return fmt.Errorf("failed to update league levels: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("league %q not found", name)
+	}
+	return nil
+}
+
+// GetLeagueLevels retrieves the allowed playable levels for a league
+func GetLeagueLevels(name string) ([]string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return []string{}, nil
+	}
+	var raw string
+	err := db.QueryRow(`SELECT COALESCE(levels, '') FROM leagues WHERE name = ?`, name).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parseLevels(raw), nil
 }
 
 // DeleteLeague removes a league from the leagues table
@@ -395,9 +500,52 @@ func DeleteLeague(name string) error {
 	return nil
 }
 
-// GetLeagueNames returns just a simple list of league names
-func GetLeagueNames() ([]string, error) {
-	rows, err := db.Query(`SELECT name FROM leagues ORDER BY name ASC`)
+// SetLeagueLock toggles the is_locked state of a league
+func SetLeagueLock(name string, locked bool) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("league name cannot be empty")
+	}
+	lockVal := 0
+	if locked {
+		lockVal = 1
+	}
+	res, err := db.Exec(`UPDATE leagues SET is_locked = ? WHERE name = ?`, lockVal, name)
+	if err != nil {
+		return fmt.Errorf("failed to update league lock status: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("league %q not found", name)
+	}
+	return nil
+}
+
+// IsLeagueLocked checks if a league is currently locked
+func IsLeagueLocked(name string) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, nil
+	}
+	var locked int
+	err := db.QueryRow(`SELECT COALESCE(is_locked, 0) FROM leagues WHERE name = ?`, name).Scan(&locked)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return locked == 1, nil
+}
+
+// GetLeagueNames returns just a simple list of league names.
+// Defaults to returning only unlocked leagues. If includeLocked is true, all leagues are returned.
+func GetLeagueNames(includeLocked ...bool) ([]string, error) {
+	query := `SELECT name FROM leagues WHERE COALESCE(is_locked, 0) = 0 ORDER BY name ASC`
+	if len(includeLocked) > 0 && includeLocked[0] {
+		query = `SELECT name FROM leagues ORDER BY name ASC`
+	}
+	rows, err := db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query league names: %w", err)
 	}
@@ -417,19 +565,61 @@ func GetLeagueNames() ([]string, error) {
 	return names, nil
 }
 
-// GetLeagues returns list of available leagues with summary statistics
-func GetLeagues() ([]LeagueInfo, error) {
-	rows, err := db.Query(`
+// GetActiveLeagues returns list of leagues with their allowed playable levels
+func GetActiveLeagues(includeLocked ...bool) ([]LeagueItem, error) {
+	whereClause := "WHERE COALESCE(is_locked, 0) = 0"
+	if len(includeLocked) > 0 && includeLocked[0] {
+		whereClause = ""
+	}
+	query := fmt.Sprintf(`SELECT name, COALESCE(description, ''), COALESCE(levels, ''), COALESCE(is_locked, 0) FROM leagues %s ORDER BY name ASC`, whereClause)
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active leagues: %w", err)
+	}
+	defer rows.Close()
+
+	var items []LeagueItem
+	for rows.Next() {
+		var name, desc, rawLevels string
+		var isLockedInt int
+		if err := rows.Scan(&name, &desc, &rawLevels, &isLockedInt); err != nil {
+			return nil, err
+		}
+		items = append(items, LeagueItem{
+			Name:        name,
+			Description: desc,
+			Levels:      parseLevels(rawLevels),
+			IsLocked:    isLockedInt != 0,
+		})
+	}
+	if items == nil {
+		items = []LeagueItem{}
+	}
+	return items, nil
+}
+
+// GetLeagues returns list of available leagues with summary statistics.
+// By default returns only unlocked leagues unless includeLocked is true.
+func GetLeagues(includeLocked ...bool) ([]LeagueInfo, error) {
+	whereClause := "WHERE COALESCE(l.is_locked, 0) = 0"
+	if len(includeLocked) > 0 && includeLocked[0] {
+		whereClause = ""
+	}
+	query := fmt.Sprintf(`
 		SELECT 
 			l.name, 
 			COALESCE(l.description, ''),
+			COALESCE(l.levels, ''),
+			COALESCE(l.is_locked, 0),
 			COUNT(DISTINCT lb.user_id) as total_players,
 			COUNT(DISTINCT lb.level) as total_levels,
 			0 as top_score
 		FROM leagues l
 		LEFT JOIN level_leaderboards lb ON lb.league = l.name
-		GROUP BY l.id, l.name, l.description
-		ORDER BY total_players DESC, l.name ASC`)
+		%s
+		GROUP BY l.id, l.name, l.description, l.levels, l.is_locked
+		ORDER BY total_players DESC, l.name ASC`, whereClause)
+	rows, err := db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query leagues: %w", err)
 	}
@@ -438,9 +628,13 @@ func GetLeagues() ([]LeagueInfo, error) {
 	var leagues []LeagueInfo
 	for rows.Next() {
 		var info LeagueInfo
-		if err := rows.Scan(&info.Name, &info.Description, &info.TotalPlayers, &info.TotalLevels, &info.TopScore); err != nil {
+		var rawLevels string
+		var isLockedInt int
+		if err := rows.Scan(&info.Name, &info.Description, &rawLevels, &isLockedInt, &info.TotalPlayers, &info.TotalLevels, &info.TopScore); err != nil {
 			return nil, err
 		}
+		info.Levels = parseLevels(rawLevels)
+		info.IsLocked = (isLockedInt != 0)
 
 		// Find top player and their total weighted league score for this league
 		_ = db.QueryRow(`
@@ -536,7 +730,7 @@ func GetLevels() ([]LevelInfo, error) {
 // GetLeaderboard returns ranked entries for a given level (ordered by score DESC, then time_taken ASC)
 func GetLeaderboard(level string) ([]ScoreEntry, error) {
 	rows, err := db.Query(`
-		SELECT id, level, COALESCE(league, 'Global Championship'), user_id, username, time_taken, clicks, COALESCE(score, 0), COALESCE(difficulty, 'easy'), status, checkpoints, submitted_at
+		SELECT id, level, COALESCE(league, ''), user_id, username, time_taken, clicks, COALESCE(score, 0), COALESCE(difficulty, 'easy'), status, checkpoints, submitted_at
 		FROM level_leaderboards
 		WHERE level = ?
 		ORDER BY score DESC, time_taken ASC, clicks ASC`, level)

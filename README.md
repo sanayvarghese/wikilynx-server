@@ -22,7 +22,9 @@ A standalone, high-performance Go server providing RESTful APIs for WikiLYNX spe
 - [4. Protected Admin Endpoints (`root` : `1234561`)](#4-protected-admin-endpoints)
   - [4.1 `POST /api/admin/leagues` (Create League)](#41-post-apiadminleagues)
   - [4.2 `DELETE /api/admin/leagues` (Delete League)](#42-delete-apiadminleagues)
-  - [4.3 `POST /api/admin/login` (Verify Admin Credentials)](#43-post-apiadminlogin)
+  - [4.3 `POST /api/admin/leagues/lock` (Lock / Unlock League)](#43-post-apiadminleagueslock)
+  - [4.4 `POST /api/admin/leagues/levels` (Configure Playable Levels)](#44-post-apiadminleagueslevels)
+  - [4.5 `POST /api/admin/login` (Verify Admin Credentials)](#45-post-apiadminlogin)
 - [5. Web Interfaces](#5-web-interfaces)
   - [Public Leaderboard: `http://localhost:8080/`](#public-leaderboard-httplocalhost8080)
   - [Admin Panel: `http://localhost:8080/admin`](#admin-panel-httplocalhost8080admin)
@@ -105,22 +107,41 @@ All endpoints include CORS headers:
 
 ### 3.1 `GET /api/leagues`
 
-Returns a list of all currently available leagues.
+Returns active (unlocked) leagues along with their designated playable levels.
 
 #### Request
 - **Method**: `GET`
 - **URL**: `/api/leagues`
 - **Query Parameters**:
-  - `detailed` *(optional, bool)*: If `"true"`, returns an array of objects with player counts and top scores. Default returns a clean JSON array of strings.
+  - `detailed` *(optional, bool)*: If `"true"`, returns full objects with aggregate statistics (player counts, total levels tackled, top score).
+  - `plain` or `namesOnly` *(optional, bool)*: If `"true"`, returns a simple string array of league names `["Global Championship", ...]`.
 
 #### Success Response (Default - HTTP 200 OK)
 ```json
 [
-  "Global Championship",
-  "Speedrun Masters",
-  "Wiki Explorers"
+  {
+    "name": "Global Championship",
+    "description": "Official competitive league spanning all wiki speedrun levels.",
+    "levels": []
+  },
+  {
+    "name": "Speedrun Masters",
+    "description": "High-intensity league emphasizing rapid traversal and link efficiency.",
+    "levels": [
+      "flyingduck",
+      "cattomosfet!"
+    ]
+  },
+  {
+    "name": "Wiki Explorers",
+    "description": "Casual league welcoming runs across all difficulty tiers.",
+    "levels": []
+  }
 ]
 ```
+
+> [!NOTE]
+> If `levels` is empty `[]`, **all levels** are permitted to be played in that league. If `levels` contains specific level names, only those designated levels are permitted.
 
 #### Example curl:
 ```bash
@@ -405,9 +426,11 @@ Creates a new league.
   ```json
   {
     "name": "Weekend Blitz",
-    "description": "Short sprint challenges every weekend"
+    "description": "Short sprint challenges every weekend",
+    "levels": ["flyingduck", "cattomosfet!"]
   }
   ```
+  *(Note: `levels` is optional. Pass an array of level names or a comma-separated string, or omit/leave empty to permit all levels).*
 - **Response**: `{"success": true, "message": "League created successfully"}`
 
 #### Example curl:
@@ -415,7 +438,7 @@ Creates a new league.
 curl -X POST http://localhost:8080/api/admin/leagues \
   -u root:1234561 \
   -H "Content-Type: application/json" \
-  -d '{"name": "Weekend Blitz", "description": "Short sprint challenges"}'
+  -d '{"name": "Weekend Blitz", "description": "Short sprint challenges", "levels": ["flyingduck", "cattomosfet!"]}'
 ```
 
 ---
@@ -439,7 +462,83 @@ curl -X DELETE "http://localhost:8080/api/admin/leagues?name=Weekend%20Blitz" \
 
 ---
 
-### 4.3 `POST /api/admin/login`
+### 4.3 `POST /api/admin/leagues/lock`
+
+Locks or unlocks an existing league. When a league is **locked**:
+- It is hidden from `GET /api/leagues`, so game clients will not see or be able to select it.
+- Any score submissions (`POST /api/score`) submitted under a locked league are rejected with `HTTP 403 Forbidden`.
+
+#### Request
+- **Method**: `POST` (or `PATCH` to `/api/admin/leagues`)
+- **URL**: `/api/admin/leagues/lock`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Basic cm9vdDoxMjM0NTYx`
+- **Body**:
+  ```json
+  {
+    "name": "Speedrun Masters",
+    "locked": true
+  }
+  ```
+- **Response**: `{"success": true, "message": "League \"Speedrun Masters\" successfully locked"}`
+
+#### Example curl (Lock):
+```bash
+curl -X POST http://localhost:8080/api/admin/leagues/lock \
+  -u root:1234561 \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Speedrun Masters", "locked": true}'
+```
+
+#### Example curl (Unlock):
+```bash
+curl -X POST http://localhost:8080/api/admin/leagues/lock \
+  -u root:1234561 \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Speedrun Masters", "locked": false}'
+```
+
+---
+
+### 4.4 `POST /api/admin/leagues/levels`
+
+Configures or updates the allowed playable levels for an existing league.
+
+#### Request
+- **Method**: `POST`, `PUT`, or `PATCH`
+- **URL**: `/api/admin/leagues/levels`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Basic cm9vdDoxMjM0NTYx`
+- **Body**:
+  ```json
+  {
+    "name": "Speedrun Masters",
+    "levels": ["flyingduck", "cattomosfet!"]
+  }
+  ```
+  *(Pass an empty array `[]` or empty string `""` to remove restrictions and permit all levels).*
+- **Response**:
+  ```json
+  {
+    "success": true,
+    "message": "Playable levels updated for league \"Speedrun Masters\"",
+    "data": ["flyingduck", "cattomosfet!"]
+  }
+  ```
+
+#### Example curl:
+```bash
+curl -X POST http://localhost:8080/api/admin/leagues/levels \
+  -u root:1234561 \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Speedrun Masters", "levels": ["flyingduck", "cattomosfet!"]}'
+```
+
+---
+
+### 4.5 `POST /api/admin/login`
 
 Verifies admin credentials for web forms.
 
@@ -451,14 +550,18 @@ Verifies admin credentials for web forms.
 ## 5. Web Interfaces
 
 ### Public Leaderboard: `http://localhost:8080/`
-- **Dropdown**: Organized into `🏆 Competitive Leagues` and `🎮 Individual Levels`.
+- **Dropdown**: Organized into `🏆 Competitive Leagues` and `🎮 Individual Levels` (displays only active, unlocked leagues).
 - **Ranked Table**: Displays Rank (🥇, 🥈, 🥉), Player & `userId`, Score Badge (`★ 7,613 pts`), Time, Clicks, Difficulty (`0.0 - 1.0`), Status (`Win (1)` / `Loss (0)`), Date.
 - **Highlights Cards**: Top Score, Total Competitors, Best Route / Levels Cleared, Active View.
 - **Search & Auto-Refresh**: Instant live filter with optional 10s auto-refresh.
 
 ### Admin Panel: `http://localhost:8080/admin`
 - **Security**: Password prompt requiring `root` / `1234561`.
-- **League Management**: Create new leagues (Name & Description) or delete existing leagues with one click.
+- **League Management**: 
+  - **Create League with Playable Levels**: Set optional comma-separated playable level names during creation.
+  - **Edit Playable Levels**: Single-click `[ 🎯 Levels ]` button on any league row to modify or clear its permitted levels on the fly.
+  - **Lock / Unlock Toggle**: Single-click `[ 🔒 Lock ]` / `[ 🔓 Unlock ]` button to hide/show leagues for clients and disable/enable score submissions.
+  - **Badges**: Displays `🟢 Active` / `🔒 Locked` status, and blue badge chips for each designated playable level (or "All Levels Allowed").
 
 
 ---
