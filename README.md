@@ -65,31 +65,29 @@ Pre-set difficulty names map to:
 
 ### Composite Score Calculation
 
-All parameters (`time`, `clicks`, `difficulty`, `status`, `checkpoints`) directly factor into the final score:
+Whatever the status may be (`1` for win or `0` for lose), the exact same base formula is applied:
 
-#### When Player Wins (`status == 1`):
-$$\text{Base} = \max\left(100.0, 10,000.0 - (10.0 \times T) - (100.0 \times C)\right) + (\text{checkpoints} \times 250.0)$$
-$$\text{Score} = \text{round}(M_{\text{diff}} \times \text{Base})$$
+$$\text{Base Score} = \max\left(100.0, 10,000.0 - (10.0 \times T) - (100.0 \times C)\right) + (\text{checkpoints} \times 250.0)$$
 
-- High speed ($T$) and low clicks ($C$) maximize the base points.
-- Each cleared checkpoint awards $+250$ bonus points.
-- Scaled by the difficulty multiplier ($0.0 \text{ to } 1.0$).
-
-#### When Player Loses (`status == 0`):
-$$\text{Score} = \text{round}(M_{\text{diff}} \times (\text{checkpoints} \times 250.0))$$
-
-- Rewards progress: if the player cleared 2 checkpoints before failing on a medium level ($0.50$), they still earn $2 \times 250 \times 0.50 = 250$ points!
-- If no checkpoints were cleared (`checkpoints == 0`), the loss score is $0$.
+- **Single Level Leaderboards (`GET /api/leaderboard?level=...`)**:
+  - Scores represent the pure **Base Score**: $\text{Level Score} = \text{round}(\text{Base Score})$.
+  - Everyone playing the same level is judged on pure speed, route efficiency, and checkpoints, keeping scores high, un-deflated, and intuitive.
+- **Time ($T$) & Clicks ($C$)**: Lower time and fewer clicks maximize the base score.
+- **Checkpoints**: Each checkpoint cleared awards $+250$ bonus points.
+- **Status Independent**: The same formula applies for both wins (`1`) and losses/timeouts (`0`).
 
 ---
 
-### League Aggregation Rules
+### League Combination & Difficulty Multiplier
+
+The **difficulty multiplier ($0.0 \text{ to } 1.0$)** is stored with every run and is specifically applied when combining multiple levels into a **League Leaderboard**:
 
 1. When players submit scores specifying a `league`, their runs are tagged with that league.
-2. In the **League Leaderboard** (`GET /api/leaderboard?league=...`), scores from all distinct levels completed by a player are **combined by unique `userId`**:
-   - Distinct players who share the same display name remain separate because aggregation keys on `userId`.
-   - Harder levels yield more points, so players playing different levels are compared fairly.
-   - $\text{Total League Score} = \sum \text{Best Score per Level}$.
+2. In the **League Leaderboard** (`GET /api/leaderboard?league=...`), scores from all distinct levels completed by a player are **weighted by level difficulty and summed by unique `userId`**:
+   $$\text{League Level Contribution} = \text{round}(\text{Level Base Score} \times M_{\text{diff}})$$
+   $$\text{Total League Score} = \sum_{\text{levels}} \left( \text{round}(\text{Level Base Score} \times M_{\text{diff}}) \right)$$
+3. **Fair Cross-Level Balancing**: Harder levels (e.g. `insane = 1.00`) contribute full score, while easier levels (e.g. `easy = 0.25`) contribute proportionally, perfectly balancing players who choose different levels in the league.
+4. Distinct players who share the same display name remain separate because aggregation keys on `userId`.
 
 ---
 

@@ -102,7 +102,7 @@ func initDB(dataSourceName string) (*sql.DB, error) {
 	seedLeagues()
 
 	// Backfill any zero scores with calculated values
-	backfillScores()
+	recalculateAllScores()
 
 	log.Println("Database initialized successfully with leagues and level_leaderboards.")
 	return db, nil
@@ -141,7 +141,7 @@ func migrateColumns() {
 		_, _ = db.Exec("ALTER TABLE level_leaderboards ADD COLUMN score REAL DEFAULT 0")
 	}
 	if !hasDiff {
-		_, _ = db.Exec("ALTER TABLE level_leaderboards ADD COLUMN difficulty TEXT DEFAULT 'easy'")
+		_, _ = db.Exec("ALTER TABLE level_leaderboards ADD COLUMN difficulty TEXT DEFAULT '0.25'")
 	}
 	if !hasLeague {
 		_, _ = db.Exec("ALTER TABLE level_leaderboards ADD COLUMN league TEXT DEFAULT 'Global Championship'")
@@ -150,6 +150,12 @@ func migrateColumns() {
 	// Normalize status to integer: 1 for Win, 0 for Lose
 	_, _ = db.Exec("UPDATE level_leaderboards SET status = 1 WHERE status = 'Win!' OR status = 'win' OR status = '1' OR status = 1")
 	_, _ = db.Exec("UPDATE level_leaderboards SET status = 0 WHERE status != 1 AND status != '1'")
+
+	// Normalize difficulty to numeric representation ("0.25", "0.50", "0.75", "1.00")
+	_, _ = db.Exec("UPDATE level_leaderboards SET difficulty = '0.25' WHERE difficulty = 'easy'")
+	_, _ = db.Exec("UPDATE level_leaderboards SET difficulty = '0.50' WHERE difficulty IN ('medium', 'normal')")
+	_, _ = db.Exec("UPDATE level_leaderboards SET difficulty = '0.75' WHERE difficulty = 'hard'")
+	_, _ = db.Exec("UPDATE level_leaderboards SET difficulty = '1.00' WHERE difficulty IN ('expert', 'insane')")
 
 	_, _ = db.Exec("CREATE INDEX IF NOT EXISTS idx_leaderboards_league ON level_leaderboards(league)")
 }
@@ -171,38 +177,44 @@ func seedLeagues() {
 	}
 }
 
-func backfillScores() {
+func recalculateAllScores() {
 	rows, err := db.Query(`
-		SELECT id, time_taken, clicks, difficulty, status, checkpoints 
-		FROM level_leaderboards 
-		WHERE score = 0 OR score IS NULL`)
+		SELECT id, time_taken, clicks, checkpoints 
+		FROM level_leaderboards`)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
-	type backfillItem struct {
+	type item struct {
 		id    int64
 		score float64
 	}
-	var items []backfillItem
+	var items []item
 
 	for rows.Next() {
 		var id int64
 		var timeTaken float64
 		var clicks int
-		var diff string
-		var status int
 		var chk int
-		if err := rows.Scan(&id, &timeTaken, &clicks, &diff, &status, &chk); err == nil {
-			calc, _ := CalculateScore(timeTaken, clicks, diff, status, chk)
-			items = append(items, backfillItem{id: id, score: calc})
+		if err := rows.Scan(&id, &timeTaken, &clicks, &chk); err == nil {
+			score := calculateBase(timeTaken, clicks, chk)
+			items = append(items, item{id: id, score: score})
 		}
 	}
 
-	for _, item := range items {
-		_, _ = db.Exec("UPDATE level_leaderboards SET score = ? WHERE id = ?", item.score, item.id)
+	for _, it := range items {
+		_, _ = db.Exec("UPDATE level_leaderboards SET score = ? WHERE id = ?", it.score, it.id)
 	}
+}
+
+func calculateBase(timeTaken float64, clicks int, checkpoints int) float64 {
+	base := 10000.0 - (10.0 * timeTaken) - (100.0 * float64(clicks))
+	if base < 100.0 {
+		base = 100.0
+	}
+	base += float64(checkpoints) * 250.0
+	return math.Round(base)
 }
 
 func clampMultiplier(v float64) float64 {
@@ -251,22 +263,18 @@ func ParseDifficultyMultiplier(diffVal interface{}) (float64, string) {
 	return 0.25, "0.25"
 }
 
-// CalculateScore computes the run score considering time, clicks, difficulty (0.0 to 1.0), status (0/1), and checkpoints (0 if none):
-// For Win (status == 1): Score = round( DifficultyMultiplier * (max(100, 10,000 - 10*Time - 100*Clicks) + (Checkpoints * 250)) )
-// For Lose (status == 0): Score = round( DifficultyMultiplier * (Checkpoints * 250) )
+// CalculateScore computes the run's base score considering time, clicks, and checkpoints.
+// For individual levels, all players compete on the pure unscaled base score:
+//   Level Score = round( max(100, 10,000 - 10*Time - 100*Clicks) + (Checkpoints * 250) )
+//
+// The difficulty multiplier (clamped to 0.0 - 1.0) is stored alongside the run and is applied
+// when combining multiple levels into a League Leaderboard:
+//   League Level Contribution = round( Level Score * DifficultyMultiplier )
+//
+// Whatever the status may be (1 for win, 0 for lose), the exact same formula applies.
 func CalculateScore(timeTaken float64, clicks int, diffVal interface{}, status int, checkpoints int) (float64, string) {
-	mult, diffName := ParseDifficultyMultiplier(diffVal)
-	var base float64
-	if status == 1 {
-		base = 10000.0 - (10.0 * timeTaken) - (100.0 * float64(clicks))
-		if base < 100.0 {
-			base = 100.0
-		}
-		base += float64(checkpoints) * 250.0
-	} else {
-		base = float64(checkpoints) * 250.0
-	}
-	score := math.Round(base * mult)
+	_, diffName := ParseDifficultyMultiplier(diffVal)
+	score := calculateBase(timeTaken, clicks, checkpoints)
 	return score, diffName
 }
 
@@ -397,7 +405,7 @@ func GetLeagues() ([]LeagueInfo, error) {
 			COALESCE(l.description, ''),
 			COUNT(DISTINCT lb.user_id) as total_players,
 			COUNT(DISTINCT lb.level) as total_levels,
-			COALESCE(MAX(lb.score), 0) as top_score
+			0 as top_score
 		FROM leagues l
 		LEFT JOIN level_leaderboards lb ON lb.league = l.name
 		GROUP BY l.id, l.name, l.description
@@ -414,13 +422,14 @@ func GetLeagues() ([]LeagueInfo, error) {
 			return nil, err
 		}
 
-		// Find top player for this league
+		// Find top player and their total weighted league score for this league
 		_ = db.QueryRow(`
-			SELECT username 
+			SELECT username, ROUND(SUM(score * CAST(difficulty AS REAL)), 0)
 			FROM level_leaderboards 
 			WHERE league = ? 
-			ORDER BY score DESC, time_taken ASC 
-			LIMIT 1`, info.Name).Scan(&info.TopPlayer)
+			GROUP BY user_id, username
+			ORDER BY SUM(score * CAST(difficulty AS REAL)) DESC, SUM(time_taken) ASC 
+			LIMIT 1`, info.Name).Scan(&info.TopPlayer, &info.TopScore)
 
 		leagues = append(leagues, info)
 	}
@@ -430,13 +439,15 @@ func GetLeagues() ([]LeagueInfo, error) {
 	return leagues, nil
 }
 
-// GetLeagueLeaderboard aggregates all level scores for each unique user_id within a league
+// GetLeagueLeaderboard aggregates all level scores for each unique user_id within a league,
+// scaling each level's base score by its difficulty multiplier:
+// Total League Score = SUM(ROUND(score * CAST(difficulty AS REAL)))
 func GetLeagueLeaderboard(league string) ([]LeagueEntry, error) {
 	rows, err := db.Query(`
 		SELECT 
 			user_id,
 			MAX(username) as username,
-			ROUND(SUM(score), 0) as total_score,
+			ROUND(SUM(score * CAST(difficulty AS REAL)), 0) as total_score,
 			COUNT(DISTINCT level) as levels_cleared,
 			ROUND(SUM(time_taken), 2) as total_time,
 			SUM(clicks) as total_clicks,

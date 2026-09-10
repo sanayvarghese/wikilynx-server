@@ -358,6 +358,8 @@ function renderTableBody(scores) {
     leaderboardBody.innerHTML = scores.map(entry => {
       const rankBadge = getRankBadge(entry.rank);
       const shortUserId = entry.userId ? entry.userId.slice(0, 8) : 'unknown';
+      const formattedTime = formatTime(entry.timeTaken);
+      const relativeDate = formatRelativeTime(entry.submittedAt);
       const isWin = entry.status === 1 || entry.status === '1' || entry.status === true;
       const statusClass = isWin ? 'status-win' : 'status-lose';
       const statusText = isWin ? 'Win (1)' : 'Loss (0)';
