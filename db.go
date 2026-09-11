@@ -99,6 +99,15 @@ func initDB(dataSourceName string) (*sql.DB, error) {
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS level_stats (
+		level TEXT PRIMARY KEY,
+		min_time_ms INTEGER DEFAULT 0,
+		max_time_ms INTEGER DEFAULT 0,
+		max_checkpoints INTEGER DEFAULT 0,
+		total_runs INTEGER DEFAULT 0,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_leaderboards_level ON level_leaderboards(level);
 	CREATE INDEX IF NOT EXISTS idx_leaderboards_rank ON level_leaderboards(level, time_taken ASC, clicks ASC);
 	`
@@ -196,45 +205,58 @@ func migrateColumns() {
 	}
 }
 
+type LevelStats struct {
+	Level          string `json:"level"`
+	MinTimeMs      int64  `json:"minTimeMs"`
+	MaxTimeMs      int64  `json:"maxTimeMs"`
+	MaxCheckpoints int    `json:"maxCheckpoints"`
+	TotalRuns      int    `json:"totalRuns"`
+}
+
 func recalculateAllScores() {
-	rows, err := db.Query(`
-		SELECT id, time_taken, clicks, status, checkpoints 
-		FROM level_leaderboards`)
+	rows, err := db.Query(`SELECT DISTINCT level FROM level_leaderboards`)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
-	type item struct {
-		id    int64
-		score float64
-	}
-	var items []item
-
+	var levels []string
 	for rows.Next() {
-		var id int64
-		var timeTaken float64
-		var clicks int
-		var status int
-		var chk int
-		if err := rows.Scan(&id, &timeTaken, &clicks, &status, &chk); err == nil {
-			primary := 1.0
-			if status == 0 {
-				if chk > 0 && chk <= 100 {
-					primary = float64(chk) / 100.0
-				} else {
-					primary = 0.0
-				}
-			}
-			secondary := math.Max(0.0, (600.0-timeTaken)/600.0)
-			tertiary := float64(clicks)
-			score, _ := CalculateScore(primary, secondary, tertiary, 0.25)
-			items = append(items, item{id: id, score: score})
+		var lvl string
+		if err := rows.Scan(&lvl); err == nil {
+			levels = append(levels, lvl)
 		}
 	}
 
-	for _, it := range items {
-		_, _ = db.Exec("UPDATE level_leaderboards SET score = ? WHERE id = ?", it.score, it.id)
+	for _, lvl := range levels {
+		var maxChk int
+		_ = db.QueryRow(`SELECT COALESCE(MAX(checkpoints), 0) FROM level_leaderboards WHERE level = ?`, lvl).Scan(&maxChk)
+
+		var minTime float64
+		var maxTime float64
+		var count int
+		_ = db.QueryRow(`
+			SELECT COALESCE(MIN(time_taken), 0), COALESCE(MAX(time_taken), 0), COUNT(*)
+			FROM level_leaderboards
+			WHERE level = ? AND checkpoints >= ? AND checkpoints > 0`, lvl, maxChk).Scan(&minTime, &maxTime, &count)
+
+		if count > 0 {
+			minMs := int64(math.Round(minTime * 1000.0))
+			maxMs := int64(math.Round(maxTime * 1000.0))
+			if maxMs > 900000 {
+				maxMs = 900000
+			}
+			_, _ = db.Exec(`
+				INSERT INTO level_stats (level, min_time_ms, max_time_ms, max_checkpoints, total_runs, updated_at)
+				VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+				ON CONFLICT(level) DO UPDATE SET
+					min_time_ms = excluded.min_time_ms,
+					max_time_ms = excluded.max_time_ms,
+					max_checkpoints = excluded.max_checkpoints,
+					total_runs = excluded.total_runs,
+					updated_at = CURRENT_TIMESTAMP`,
+				lvl, minMs, maxMs, maxChk, count)
+		}
 	}
 }
 
@@ -284,17 +306,115 @@ func ParseDifficultyMultiplier(diffVal interface{}) (float64, string) {
 	return 0.25, "0.25"
 }
 
-// CalculateScore computes the run's base score (out of 1000 max points) using 3 parameters:
-//   Primary: Progress ratio in [0.0, 1.0] (completed checkpoints / total checkpoints)
-//   Secondary: Time ratio in [0.0, 1.0] ((totalTime - timeTaken) / totalTime)
-//   Tertiary: Raw click count
+// UpdateAndCalculateScore updates level min/max stats and computes the 1,100-point score:
+//   Primary: checkpoints completed (raw count)
+//   Secondary: time in milliseconds
+//   Tertiary: clicks (optional, multiplied by 0)
 //
-// Equation:
-//   If Primary <= 0 (player quit without clearing any checkpoint): Base Score = 0
-//   Primary Score   = Primary * 700.0   (700 max pts for progress)
-//   Secondary Score = Secondary * 200.0 (200 max pts for time efficiency)
-//   Tertiary Score  = max(0.0, 100.0 - (Tertiary * 2.0)) (100 max pts for clicks, deducting 2 pts per click)
-//   Base Score      = round(Primary Score + Secondary Score + Tertiary Score)
+// Ratio:
+//   Checkpoint Score = RankPct(checkpoint) * 1000.0   (1000 max pts)
+//   Time Score       = RankPct(time) * 100.0          (100 max pts)
+//   Tertiary Score   = tertiary * 0.0 = 0.0
+//   Base Score       = round(Checkpoint Score + Time Score) [Max = 1,100 pts]
+//   If checkpoints <= 0: Base Score = 0 (early quit gets 0 pts)
+func UpdateAndCalculateScore(level string, checkpoints int, timeMs int64, tertiary float64, diffVal interface{}) (float64, string, error) {
+	_, diffName := ParseDifficultyMultiplier(diffVal)
+
+	if checkpoints <= 0 {
+		return 0.0, diffName, nil
+	}
+
+	if timeMs < 0 {
+		timeMs = 0
+	}
+	// Cap time at 15 minutes (900,000 ms) so AFK runs cannot break the scale
+	cappedTimeMs := timeMs
+	if cappedTimeMs > 900000 {
+		cappedTimeMs = 900000
+	}
+
+	var stats LevelStats
+	stats.Level = level
+
+	err := db.QueryRow(`
+		SELECT min_time_ms, max_time_ms, max_checkpoints, total_runs 
+		FROM level_stats 
+		WHERE level = ?`, level).Scan(&stats.MinTimeMs, &stats.MaxTimeMs, &stats.MaxCheckpoints, &stats.TotalRuns)
+
+	if err == sql.ErrNoRows {
+		// First player for this level
+		stats.MinTimeMs = cappedTimeMs
+		stats.MaxTimeMs = cappedTimeMs
+		stats.MaxCheckpoints = checkpoints
+		stats.TotalRuns = 1
+
+		_, _ = db.Exec(`
+			INSERT INTO level_stats (level, min_time_ms, max_time_ms, max_checkpoints, total_runs, updated_at)
+			VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)`,
+			level, stats.MinTimeMs, stats.MaxTimeMs, stats.MaxCheckpoints)
+
+		// First player gets full 1,100 points
+		baseScore := 1000.0 + 100.0
+		return math.Round(baseScore), diffName, nil
+	} else if err != nil {
+		return 0, diffName, err
+	}
+
+	// Update running stats with current run
+	if checkpoints > stats.MaxCheckpoints {
+		stats.MaxCheckpoints = checkpoints
+		// When a new depth record is set, this run's time becomes the baseline min_time for full completion
+		stats.MinTimeMs = cappedTimeMs
+	} else if checkpoints >= stats.MaxCheckpoints {
+		// ONLY qualifying runs (reaching the level's max checkpoints) can set a new fastest time
+		if stats.MinTimeMs == 0 || cappedTimeMs < stats.MinTimeMs {
+			stats.MinTimeMs = cappedTimeMs
+		}
+	}
+
+	if cappedTimeMs > stats.MaxTimeMs {
+		stats.MaxTimeMs = cappedTimeMs
+	}
+	stats.TotalRuns++
+
+	_, _ = db.Exec(`
+		UPDATE level_stats 
+		SET min_time_ms = ?, max_time_ms = ?, max_checkpoints = ?, total_runs = ?, updated_at = CURRENT_TIMESTAMP 
+		WHERE level = ?`,
+		stats.MinTimeMs, stats.MaxTimeMs, stats.MaxCheckpoints, stats.TotalRuns, level)
+
+	// Calculate Rank Percentages
+	chkPct := 1.0
+	if stats.MaxCheckpoints > 0 {
+		chkPct = float64(checkpoints) / float64(stats.MaxCheckpoints)
+		if chkPct > 1.0 {
+			chkPct = 1.0
+		}
+	}
+
+	timePct := 1.0
+	if stats.MaxTimeMs > stats.MinTimeMs {
+		timePct = float64(stats.MaxTimeMs-cappedTimeMs) / float64(stats.MaxTimeMs-stats.MinTimeMs)
+		if timePct < 0.0 {
+			timePct = 0.0
+		}
+		if timePct > 1.0 {
+			timePct = 1.0
+		}
+	}
+
+	chkScore := chkPct * 1000.0
+	timeScore := timePct * 100.0
+	tertScore := tertiary * 0.0
+
+	baseScore := chkScore + timeScore + tertScore
+	return math.Round(baseScore), diffName, nil
+}
+
+// CalculateScore computes the 1,100-point score using rank percentages directly:
+//   Primary: checkpoint rank percentage (0.0 to 1.0)
+//   Secondary: time rank percentage (0.0 to 1.0)
+//   Tertiary: raw clicks (optional, multiplied by 0)
 func CalculateScore(primary float64, secondary float64, tertiary float64, diffVal interface{}) (float64, string) {
 	_, diffName := ParseDifficultyMultiplier(diffVal)
 	if primary <= 0.0 {
@@ -315,18 +435,7 @@ func CalculateScore(primary float64, secondary float64, tertiary float64, diffVa
 			secondary = 1.0
 		}
 	}
-	if tertiary < 0.0 {
-		tertiary = 0.0
-	}
-
-	primScore := primary * 700.0
-	secScore := secondary * 200.0
-	tertScore := 100.0 - (tertiary * 2.0)
-	if tertScore < 0.0 {
-		tertScore = 0.0
-	}
-
-	base := primScore + secScore + tertScore
+	base := (primary * 1000.0) + (secondary * 100.0) + (tertiary * 0.0)
 	return math.Round(base), diffName
 }
 

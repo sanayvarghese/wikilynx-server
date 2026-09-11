@@ -24,12 +24,13 @@ type ScoreRequest struct {
 	Clicks      interface{} `json:"clicks,omitempty"`
 	Status      interface{} `json:"status,omitempty"` // 0 = Lose, 1 = Win (accepts int, bool, or string)
 	Checkpoints interface{} `json:"checkpoints,omitempty"`
+	Checkpoint  interface{} `json:"checkpoint,omitempty"`
 	Progress    interface{} `json:"progress,omitempty"`
 
 	// Score parameters:
-	Primary   interface{} `json:"primary,omitempty"`   // Progress ratio (done/total checkpoints)
-	Secondary interface{} `json:"secondary,omitempty"` // Time ratio ((totalTime - timeTaken) / totalTime)
-	Tertiary  interface{} `json:"tertiary,omitempty"`  // Raw click count
+	Primary   interface{} `json:"primary,omitempty"`   // Checkpoints completed
+	Secondary interface{} `json:"secondary,omitempty"` // Time in milliseconds
+	Tertiary  interface{} `json:"tertiary,omitempty"`  // Raw clicks (optional, multiplied by 0)
 }
 
 type APIResponse struct {
@@ -142,74 +143,58 @@ func handleScoreSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional fields parsing
-	var timeTaken float64 = 0.0
-	if req.Time != nil {
-		if t, err := parseNumber(req.Time); err == nil && t >= 0 {
-			timeTaken = t
-		}
-	}
-
-	var clicks int = 0
-	if req.Clicks != nil {
-		if c, err := parseNumber(req.Clicks); err == nil && c >= 0 {
-			clicks = int(c)
-		}
-	}
-
-	status := parseStatus(req.Status)
-
+	// Primary parameter: checkpoints completed (raw count)
 	var checkpoints int = 0
-	if req.Checkpoints != nil {
-		if chkF, err := parseNumber(req.Checkpoints); err == nil && chkF >= 0 {
-			checkpoints = int(chkF)
-		}
-	}
-
-	// Primary parameter: Progress ratio (0.0 to 1.0)
-	var primary float64 = 0.0
 	if req.Primary != nil {
-		if p, err := parseNumber(req.Primary); err == nil {
-			primary = p
+		if p, err := parseNumber(req.Primary); err == nil && p >= 0 {
+			checkpoints = int(p)
 		}
-	} else if req.Progress != nil {
-		if p, err := parseNumber(req.Progress); err == nil {
-			primary = p / 100.0
+	} else if req.Checkpoint != nil {
+		if c, err := parseNumber(req.Checkpoint); err == nil && c >= 0 {
+			checkpoints = int(c)
 		}
-	} else if checkpoints > 0 {
-		primary = float64(checkpoints) / 4.0
-		if primary > 1.0 {
-			primary = 1.0
+	} else if req.Checkpoints != nil {
+		if c, err := parseNumber(req.Checkpoints); err == nil && c >= 0 {
+			checkpoints = int(c)
 		}
-	} else if status == 1 {
-		primary = 1.0
 	}
 
-	// Secondary parameter: Time ratio (0.0 to 1.0)
-	var secondary float64 = 0.0
+	// Secondary parameter: time in milliseconds
+	var timeMs int64 = 0
 	if req.Secondary != nil {
-		if s, err := parseNumber(req.Secondary); err == nil {
-			secondary = s
+		if s, err := parseNumber(req.Secondary); err == nil && s >= 0 {
+			// If sent in seconds with decimals (e.g. 24.5) or < 1000 with decimals, convert to ms
+			if s < 1000 && strings.Contains(fmt.Sprintf("%v", req.Secondary), ".") {
+				timeMs = int64(math.Round(s * 1000.0))
+			} else {
+				timeMs = int64(math.Round(s))
+			}
 		}
-	} else if timeTaken > 0 {
-		secondary = math.Max(0.0, (600.0-timeTaken)/600.0)
-	} else if status == 1 {
-		secondary = 1.0
+	} else if req.Time != nil {
+		if t, err := parseNumber(req.Time); err == nil && t >= 0 {
+			if t < 1000 && strings.Contains(fmt.Sprintf("%v", req.Time), ".") {
+				timeMs = int64(math.Round(t * 1000.0))
+			} else {
+				timeMs = int64(math.Round(t))
+			}
+		}
 	}
 
-	// Tertiary parameter: Raw click count
+	// Tertiary parameter: raw clicks (optional, multiplied by 0 in score)
 	var tertiary float64 = 0.0
 	if req.Tertiary != nil {
 		if t, err := parseNumber(req.Tertiary); err == nil && t >= 0 {
 			tertiary = t
 		}
-	} else {
-		tertiary = float64(clicks)
+	} else if req.Clicks != nil {
+		if c, err := parseNumber(req.Clicks); err == nil && c >= 0 {
+			tertiary = c
+		}
 	}
 
-	if clicks == 0 && tertiary > 0 {
-		clicks = int(tertiary)
-	}
+	var timeTaken float64 = float64(timeMs) / 1000.0
+	var clicks int = int(tertiary)
+	status := parseStatus(req.Status)
 
 	league := strings.TrimSpace(req.League)
 	if league != "" {
@@ -244,8 +229,11 @@ func handleScoreSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Compute score based on primary, secondary, tertiary, and difficulty
-	score, diffName := CalculateScore(primary, secondary, tertiary, req.Difficulty)
+	// Compute score based on primary (checkpoints), secondary (time in ms), tertiary, and difficulty
+	score, diffName, err := UpdateAndCalculateScore(level, checkpoints, timeMs, tertiary, req.Difficulty)
+	if err != nil {
+		log.Printf("[Score Warning] Level stats update error for %q: %v", level, err)
+	}
 
 	entry := ScoreEntry{
 		Level:       level,
