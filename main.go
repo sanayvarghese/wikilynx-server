@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,14 +17,19 @@ import (
 type ScoreRequest struct {
 	Level       string      `json:"level"`
 	League      string      `json:"league"`
-	Difficulty  interface{} `json:"difficulty"` // "easy", "medium", "hard", or numeric float
+	Difficulty  interface{} `json:"difficulty,omitempty"` // "easy", "medium", "hard", or numeric float
 	UserID      string      `json:"userId"`
 	Username    string      `json:"username"`
-	Time        interface{} `json:"time"` // float or string
-	Clicks      interface{} `json:"clicks"`
-	Status      interface{} `json:"status"` // 0 = Lose, 1 = Win (accepts int, bool, or string)
-	Checkpoints interface{} `json:"checkpoints"`
+	Time        interface{} `json:"time,omitempty"`
+	Clicks      interface{} `json:"clicks,omitempty"`
+	Status      interface{} `json:"status,omitempty"` // 0 = Lose, 1 = Win (accepts int, bool, or string)
+	Checkpoints interface{} `json:"checkpoints,omitempty"`
 	Progress    interface{} `json:"progress,omitempty"`
+
+	// Score parameters:
+	Primary   interface{} `json:"primary,omitempty"`   // Progress ratio (done/total checkpoints)
+	Secondary interface{} `json:"secondary,omitempty"` // Time ratio ((totalTime - timeTaken) / totalTime)
+	Tertiary  interface{} `json:"tertiary,omitempty"`  // Raw click count
 }
 
 type APIResponse struct {
@@ -136,36 +142,21 @@ func handleScoreSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Time == nil {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "time is required"})
-		return
-	}
-	timeTaken, err := parseNumber(req.Time)
-	if err != nil || timeTaken < 0 {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "time must be a valid non-negative number"})
-		return
+	// Optional fields parsing
+	var timeTaken float64 = 0.0
+	if req.Time != nil {
+		if t, err := parseNumber(req.Time); err == nil && t >= 0 {
+			timeTaken = t
+		}
 	}
 
-	if req.Clicks == nil {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "clicks is required"})
-		return
-	}
-	clicksF, err := parseNumber(req.Clicks)
-	if err != nil || clicksF < 0 {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "clicks must be a valid non-negative integer"})
-		return
-	}
-	clicks := int(clicksF)
-
-	if req.Difficulty == nil || strings.TrimSpace(fmt.Sprintf("%v", req.Difficulty)) == "" {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "difficulty is required (0.0 to 1.0 or 'easy', 'medium', 'hard', 'insane')"})
-		return
+	var clicks int = 0
+	if req.Clicks != nil {
+		if c, err := parseNumber(req.Clicks); err == nil && c >= 0 {
+			clicks = int(c)
+		}
 	}
 
-	if req.Status == nil {
-		jsonResponse(w, http.StatusBadRequest, APIResponse{Success: false, Message: "status is required (1 for win, 0 for lose)"})
-		return
-	}
 	status := parseStatus(req.Status)
 
 	var checkpoints int = 0
@@ -175,26 +166,49 @@ func handleScoreSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var progress float64 = 0.0
-	if req.Progress != nil {
+	// Primary parameter: Progress ratio (0.0 to 1.0)
+	var primary float64 = 0.0
+	if req.Primary != nil {
+		if p, err := parseNumber(req.Primary); err == nil {
+			primary = p
+		}
+	} else if req.Progress != nil {
 		if p, err := parseNumber(req.Progress); err == nil {
-			progress = p
+			primary = p / 100.0
 		}
-	} else if req.Checkpoints != nil {
-		if p, err := parseNumber(req.Checkpoints); err == nil {
-			progress = p
+	} else if checkpoints > 0 {
+		primary = float64(checkpoints) / 4.0
+		if primary > 1.0 {
+			primary = 1.0
 		}
+	} else if status == 1 {
+		primary = 1.0
 	}
 
-	// If player won (status == 1), progress is 100%
-	if status == 1 && progress < 100.0 {
-		progress = 100.0
+	// Secondary parameter: Time ratio (0.0 to 1.0)
+	var secondary float64 = 0.0
+	if req.Secondary != nil {
+		if s, err := parseNumber(req.Secondary); err == nil {
+			secondary = s
+		}
+	} else if timeTaken > 0 {
+		secondary = math.Max(0.0, (600.0-timeTaken)/600.0)
+	} else if status == 1 {
+		secondary = 1.0
 	}
-	if progress > 100.0 {
-		progress = 100.0
+
+	// Tertiary parameter: Raw click count
+	var tertiary float64 = 0.0
+	if req.Tertiary != nil {
+		if t, err := parseNumber(req.Tertiary); err == nil && t >= 0 {
+			tertiary = t
+		}
+	} else {
+		tertiary = float64(clicks)
 	}
-	if progress < 0.0 {
-		progress = 0.0
+
+	if clicks == 0 && tertiary > 0 {
+		clicks = int(tertiary)
 	}
 
 	league := strings.TrimSpace(req.League)
@@ -230,8 +244,8 @@ func handleScoreSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Compute score based on time, clicks, difficulty (0.0 to 1.0), status (1/0), and checkpoint progress %
-	score, diffName := CalculateScore(timeTaken, clicks, req.Difficulty, status, progress)
+	// Compute score based on primary, secondary, tertiary, and difficulty
+	score, diffName := CalculateScore(primary, secondary, tertiary, req.Difficulty)
 
 	entry := ScoreEntry{
 		Level:       level,

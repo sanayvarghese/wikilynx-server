@@ -218,15 +218,17 @@ func recalculateAllScores() {
 		var status int
 		var chk int
 		if err := rows.Scan(&id, &timeTaken, &clicks, &status, &chk); err == nil {
-			progress := 100.0
+			primary := 1.0
 			if status == 0 {
 				if chk > 0 && chk <= 100 {
-					progress = float64(chk)
+					primary = float64(chk) / 100.0
 				} else {
-					progress = 0.0
+					primary = 0.0
 				}
 			}
-			score := calculateBase(timeTaken, clicks, progress)
+			secondary := math.Max(0.0, (600.0-timeTaken)/600.0)
+			tertiary := float64(clicks)
+			score, _ := CalculateScore(primary, secondary, tertiary, 0.25)
 			items = append(items, item{id: id, score: score})
 		}
 	}
@@ -234,25 +236,6 @@ func recalculateAllScores() {
 	for _, it := range items {
 		_, _ = db.Exec("UPDATE level_leaderboards SET score = ? WHERE id = ?", it.score, it.id)
 	}
-}
-
-// calculateBase computes the base score using time, clicks, and checkpoint completion percentage (0.0% to 100.0%):
-//   Completion Bonus = (Progress% / 100.0) * 2,500.0
-//   Base Score = max(100.0, 10,000.0 - 10*Time - 100*Clicks) + Completion Bonus
-func calculateBase(timeTaken float64, clicks int, progress float64) float64 {
-	base := 10000.0 - (10.0 * timeTaken) - (100.0 * float64(clicks))
-	if base < 100.0 {
-		base = 100.0
-	}
-	if progress > 100.0 {
-		progress = 100.0
-	}
-	if progress < 0.0 {
-		progress = 0.0
-	}
-	bonus := (progress / 100.0) * 2500.0
-	base += bonus
-	return math.Round(base)
 }
 
 func clampMultiplier(v float64) float64 {
@@ -301,20 +284,50 @@ func ParseDifficultyMultiplier(diffVal interface{}) (float64, string) {
 	return 0.25, "0.25"
 }
 
-// CalculateScore computes the run's base score considering time, clicks, and checkpoint completion percentage (0-100%).
-// For individual levels, all players compete on the pure unscaled base score:
-//   Completion Bonus = (Progress / 100.0) * 2500
-//   Level Score = round( max(100, 10,000 - 10*Time - 100*Clicks) + Completion Bonus )
+// CalculateScore computes the run's base score (out of 1000 max points) using 3 parameters:
+//   Primary: Progress ratio in [0.0, 1.0] (completed checkpoints / total checkpoints)
+//   Secondary: Time ratio in [0.0, 1.0] ((totalTime - timeTaken) / totalTime)
+//   Tertiary: Raw click count
 //
-// The difficulty multiplier (clamped to 0.0 - 1.0) is stored alongside the run and is applied
-// when combining multiple levels into a League Leaderboard:
-//   League Level Contribution = round( Level Score * DifficultyMultiplier )
-//
-// Whatever the status may be (1 for win, 0 for lose), the exact same formula applies.
-func CalculateScore(timeTaken float64, clicks int, diffVal interface{}, status int, progress float64) (float64, string) {
+// Equation:
+//   If Primary <= 0 (player quit without clearing any checkpoint): Base Score = 0
+//   Primary Score   = Primary * 700.0   (700 max pts for progress)
+//   Secondary Score = Secondary * 200.0 (200 max pts for time efficiency)
+//   Tertiary Score  = max(0.0, 100.0 - (Tertiary * 2.0)) (100 max pts for clicks, deducting 2 pts per click)
+//   Base Score      = round(Primary Score + Secondary Score + Tertiary Score)
+func CalculateScore(primary float64, secondary float64, tertiary float64, diffVal interface{}) (float64, string) {
 	_, diffName := ParseDifficultyMultiplier(diffVal)
-	score := calculateBase(timeTaken, clicks, progress)
-	return score, diffName
+	if primary <= 0.0 {
+		return 0.0, diffName
+	}
+	if primary > 1.0 {
+		primary = primary / 100.0
+		if primary > 1.0 {
+			primary = 1.0
+		}
+	}
+	if secondary < 0.0 {
+		secondary = 0.0
+	}
+	if secondary > 1.0 {
+		secondary = secondary / 100.0
+		if secondary > 1.0 {
+			secondary = 1.0
+		}
+	}
+	if tertiary < 0.0 {
+		tertiary = 0.0
+	}
+
+	primScore := primary * 700.0
+	secScore := secondary * 200.0
+	tertScore := 100.0 - (tertiary * 2.0)
+	if tertScore < 0.0 {
+		tertScore = 0.0
+	}
+
+	base := primScore + secScore + tertScore
+	return math.Round(base), diffName
 }
 
 // SaveScore records or updates a player's score for a level and league.

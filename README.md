@@ -152,10 +152,11 @@ curl http://localhost:8080/api/leagues
 
 ### 3.2 `POST /api/score`
 
-Submits player stats upon finishing a level.
+Submits player stats and computes the level score.
 
 > [!IMPORTANT]
-> **Field Requirements**: Except for `league` (which is optional and defaults to `"Global Championship"`), **ALL other fields are REQUIRED** because they are all used in the score calculation. If the player cleared no checkpoints, pass `0`.
+> **Field Requirements**: Only `level`, `userId`, and `username` are **REQUIRED**. 
+> Score calculation is driven by `primary`, `secondary`, and `tertiary` parameters. If omitted, they are automatically derived from legacy parameters (`time`, `clicks`, `checkpoints`, `progress`, `status`).
 
 #### Request Headers
 - `Content-Type: application/json`
@@ -167,42 +168,39 @@ Submits player stats upon finishing a level.
 | `level` | `string` | **REQUIRED** | Non-empty string | Name of the level played (e.g. `"flyingduck"`) |
 | `userId` | `string` | **REQUIRED** | Non-empty string | Unique persistent client ID (e.g. UUID) |
 | `username` | `string` | **REQUIRED** | Non-empty string | Player's display name (e.g. `"Alice"`) |
-| `time` | `float` | **REQUIRED** | $\ge 0.0$ | Total time taken in seconds (e.g. `24.5`) |
-| `clicks` | `int` | **REQUIRED** | $\ge 0$ | Total links clicked (e.g. `5`) |
-| `difficulty` | `float`/`string` | **REQUIRED** | `0.0` – `1.0` or `"easy"`, `"medium"`, `"hard"`, `"insane"` | Multiplier between 0.0 and 1.0 |
-| `status` | `int` | **REQUIRED** | **`1` = Win, `0` = Lose** | Result of the run |
-| `checkpoints` | `int` | **REQUIRED** | $\ge 0$ (pass `0` if none) | Checkpoints cleared count |
-| `progress` | `float` | *Optional* | `0.0` – `100.0` | Checkpoint completion percentage (auto-defaults to 100 for wins) |
-| `league` | `string` | *Optional* | String | Target league (default: `"Global Championship"`) |
+| `primary` | `float` | *Optional* | `0.0` – `1.0` | **Primary factor**: Checkpoint progress ratio ($\frac{\text{completed checkpoints}}{\text{total checkpoints}}$) |
+| `secondary` | `float` | *Optional* | `0.0` – `1.0` | **Secondary factor**: Time ratio ($\frac{\text{totalTime} - \text{timeTaken}}{\text{totalTime}}$) |
+| `tertiary` | `float`/`int` | *Optional* | $\ge 0$ | **Tertiary factor**: Raw click count (e.g. `6`) |
+| `time` | `float` | *Optional* | $\ge 0.0$ | Time taken in seconds (stored for leaderboard display) |
+| `clicks` | `int` | *Optional* | $\ge 0$ | Total links clicked (stored for leaderboard display) |
+| `difficulty` | `float`/`string` | *Optional* | `0.0` – `1.0` or `"easy"`, `"medium"`, `"hard"`, `"insane"` | Difficulty multiplier (defaults to `0.25`) |
+| `status` | `int` | *Optional* | **`1` = Win, `0` = Lose** | Result of the run |
+| `checkpoints` | `int` | *Optional* | $\ge 0$ | Checkpoints cleared count |
+| `league` | `string` | *Optional* | String | Target league (defaults to `""` for non-league run) |
 
-#### Example Request (Win):
+#### Score Equation (Max Base Score = 1,000 pts):
+$$\text{Primary Score} = \text{primary} \times 700 \quad (700\text{ max pts for progress})$$
+$$\text{Secondary Score} = \text{secondary} \times 200 \quad (200\text{ max pts for time})$$
+$$\text{Tertiary Score} = \max(0,\, 100 - (\text{tertiary} \times 2)) \quad (100\text{ max pts for clicks})$$
+$$\text{Base Score} = \begin{cases} 0 & \text{if } \text{primary} \le 0 \\ \text{round}(\text{Primary Score} + \text{Secondary Score} + \text{Tertiary Score}) & \text{otherwise} \end{cases}$$
+
+#### Example Request:
 ```json
 {
   "level": "cattomosfet!",
   "userId": "c7a8109d-8d54-46e3-a442-870b2241cf89",
   "username": "SpeedDemon",
+  "primary": 1.0,
+  "secondary": 0.85,
+  "tertiary": 4,
   "time": 20.0,
   "clicks": 4,
   "difficulty": 0.75,
   "status": 1,
   "checkpoints": 3,
-  "league": "Speedrun Masters"
+  "league": "College Champions"
 }
 ```
-
-#### Example Request (Loss with partial checkpoints):
-```json
-{
-  "level": "cattomosfet!",
-  "userId": "u-failed-runner",
-  "username": "UnluckyPlayer",
-  "time": 60.0,
-  "clicks": 15,
-  "difficulty": 0.50,
-  "status": 0,
-  "checkpoints": 2,
-  "league": "Speedrun Masters"
-}
 ```
 
 #### Success Response (HTTP 200 OK):
